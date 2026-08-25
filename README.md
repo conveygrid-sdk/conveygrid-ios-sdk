@@ -160,3 +160,4 @@ This SDK includes an official **`PrivacyInfo.xcprivacy`** manifest file to ensur
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 # conveygrid-ios-sdk
+# conveygrid-ios-sdk
