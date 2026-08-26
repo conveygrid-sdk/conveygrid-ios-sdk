@@ -4,7 +4,7 @@ Native Swift/iOS SDK for **Sammati Consent & Notice Management Platform**.
 
 [![Platform](https://img.shields.io/badge/Platform-iOS%2015.0%2B-blue.svg)](https://developer.apple.com/ios/)
 [![Swift](https://img.shields.io/badge/Swift-5.9%2B-orange.svg)](https://swift.org)
-[![CocoaPods](https://img.shields.io/badge/CocoaPods-compatible-green.svg)](https://cocoapods.org)
+[![Swift Package Manager](https://img.shields.io/badge/SPM-compatible-brightgreen.svg)](https://swift.org/package-manager/)
 [![License](https://img.shields.io/badge/License-MIT-lightgrey.svg)](LICENSE)
 
 ---
@@ -14,31 +14,38 @@ Native Swift/iOS SDK for **Sammati Consent & Notice Management Platform**.
 - **Dynamic Server-Driven Branding**: Automatically styles Notice UIs using server response theme colors (`primary_color`, `secondary_color`), custom typography (`font_family`), and logo images (HTTP/HTTPS or Base64 Data URIs).
 - **Adult & Minor Consent Flows**: Fully integrated minor date-of-birth checking, parent/guardian verification, and invitation links.
 - **Apple Privacy Compliant**: Includes built-in `PrivacyInfo.xcprivacy` manifest for May 2024+ App Store requirements.
-- **Multiple Integration Options**: Supports **Swift Package Manager (SPM)** and **CocoaPods**.
+- **Swift Package Manager (SPM)**: Native SPM support for modern and lightweight dependency management.
 
 ---
 
 ## 📦 Installation
 
-### 1. Swift Package Manager (SPM)
-In Xcode:
-1. Go to **File → Add Package Dependencies...**
-2. Enter your repository URL:
+### Swift Package Manager (SPM)
+
+#### Via Xcode
+1. In Xcode, navigate to **File → Add Package Dependencies...**
+2. Enter the repository URL:
    ```
-   https://github.com/YOUR_ORGANIZATION/SammatiNoticeSDK.git
+   https://github.com/conveygrid-sdk/conveygrid-ios-sdk.git
    ```
-3. Select version `1.0.0` or latest release.
+3. Set the **Dependency Rule** to **Up to Next Major Version** (e.g., `1.0.0`) or your preferred version rule.
+4. Select your target and click **Add Package**.
 
-### 2. CocoaPods
-Add the following line to your `Podfile`:
+#### Via `Package.swift`
+Add `SammatiNoticeSDK` to your `Package.swift` dependencies:
 
-```ruby
-pod 'SammatiNoticeSDK', '~> 1.0.0'
-```
-
-*Or install directly from Git repo:*
-```ruby
-pod 'SammatiNoticeSDK', :git => 'https://github.com/YOUR_ORGANIZATION/SammatiNoticeSDK.git', :tag => '1.0.0'
+```swift
+dependencies: [
+    .package(url: "https://github.com/conveygrid-sdk/conveygrid-ios-sdk.git", from: "1.0.0")
+],
+targets: [
+    .target(
+        name: "YourTargetName",
+        dependencies: [
+            .product(name: "SammatiNoticeSDK", package: "SammatiNoticeSDK")
+        ]
+    )
+]
 ```
 
 ---
@@ -159,7 +166,4 @@ This SDK includes an official **`PrivacyInfo.xcprivacy`** manifest file to ensur
 ## 📄 License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-# conveygrid-ios-sdk
-# conveygrid-ios-sdk
-# conveygrid-ios-sdk
-# conveygrid-ios-sdk
+

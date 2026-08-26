@@ -3,10 +3,7 @@ SammatiNoticeSDK — iOS Documentation
 =====================================
 
 SPM:
-    .package(url: "https://github.com/YOUR_ORGANIZATION/SammatiNoticeSDK.git", from: "1.0.0")
-
-CocoaPods:
-    pod 'SammatiNoticeSDK', '~> 1.0.0'
+    .package(url: "https://github.com/conveygrid-sdk/conveygrid-ios-sdk.git", from: "1.0.0")
 
 Usage:
 
