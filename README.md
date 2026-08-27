@@ -153,13 +153,56 @@ let result = try await SammatiNotice.resumePendingLink(
 
 ## 🔒 Apple Privacy & App Store Compliance
 
-This SDK includes an official **`PrivacyInfo.xcprivacy`** manifest file to ensure 100% compliance with Apple App Store submission rules:
+This SDK includes an official embedded **`PrivacyInfo.xcprivacy`** manifest file in full compliance with Apple's privacy manifest and third-party SDK requirements (iOS 17+ / May 2024+ App Store mandate).
 
-- **Required Reason API**: `NSPrivacyAccessedAPICategoryUserDefaults` (`CA92.1`) for managing local session IDs and pending consent links.
-- **Collected Data Types**:
-  - `EmailAddress` (App Functionality, linked to user)
-  - `PhoneNumber` (App Functionality, linked to user)
-  - `Name` (App Functionality, linked to user)
+### 1. Xcode Privacy Report Verification
+When preparing an archive in Xcode:
+1. In Xcode, select **Product → Archive**.
+2. Once the build appears in the **Organizer**, right-click the archive (or select **Generate Privacy Report**).
+3. The exported `PrivacyReport.pdf` will automatically include all declared APIs and data collection types from `SammatiNoticeSDK`.
+
+---
+
+### 2. App Store Connect Configuration Steps (App Privacy Nutrition Label)
+
+When completing the **App Privacy** section in **App Store Connect**, follow the step-by-step instructions below:
+
+#### Step 1: Data Collection Prompt
+- Go to **App Store Connect → [Your App] → App Privacy**.
+- Select **Get Started** or **Edit**.
+- Under *"Do you or your third-party partners collect data from this app?"*, select **Yes, we collect data from this app**.
+
+#### Step 2: Declare Data Types
+Select the following **Contact Info** categories collected during consent & notice workflows:
+
+| Data Type | Category | Purpose | Linked to User? | Used for Tracking? |
+| :--- | :--- | :--- | :---: | :---: |
+| **Name** | Contact Info | **App Functionality** *(User & Guardian identification for consent records)* | **Yes** | **No** |
+| **Email Address** | Contact Info | **App Functionality** *(Consent notices, delivery receipts, and guardian invites)* | **Yes** | **No** |
+| **Phone Number** | Contact Info | **App Functionality** *(OTP verification & consent lifecycle communication)* | **Yes** | **No** |
+
+#### Step 3: Complete Question Details for Each Data Type
+For each data type (**Name**, **Email Address**, **Phone Number**), configure:
+1. **How is this data used?**
+   - Select: **App Functionality**
+2. **Is this data linked to the user’s identity?**
+   - Select: **Yes, data collected from this app is linked to the user’s identity**
+3. **Do you use this data for tracking purposes?**
+   - Select: **No, we do not use this data for tracking purposes**
+
+#### Step 4: Tracking Declaration
+- When asked if your app tracks users across apps and websites owned by other companies, select **No**.
+- `SammatiNoticeSDK` does not perform cross-app tracking, does not use IDFA / advertising identifiers, and has `NSPrivacyTracking` set to `false`.
+
+---
+
+### 3. Required Reason API Declarations
+
+The embedded `PrivacyInfo.xcprivacy` manifest declares:
+
+- **API Category**: `NSPrivacyAccessedAPICategoryUserDefaults`
+- **Reason Code**: `CA92.1`
+- **Justification**: Accesses `UserDefaults` strictly within the app's local storage container to persist and retrieve local consent session tokens, pending guardian link reference IDs, and cached notice states.
 
 ---
 
