@@ -15,6 +15,13 @@ final class APIClient {
         self.session = URLSession(configuration: sessionConfig)
     }
 
+    private func sanitizeHeaderValue(_ value: String) -> String {
+        value
+            .replacingOccurrences(of: "\r", with: "")
+            .replacingOccurrences(of: "\n", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     private func request<T: Decodable>(
         path: String,
         method: String = "GET",
@@ -35,8 +42,11 @@ final class APIClient {
         request.httpBody = body
         request.cachePolicy = .reloadIgnoringLocalCacheData
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue(configuration.clientId, forHTTPHeaderField: "X-Application-Key")
-        let cleanOrigin = configuration.origin.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        let cleanClientId = sanitizeHeaderValue(configuration.clientId)
+        request.setValue(cleanClientId, forHTTPHeaderField: "X-Application-Key")
+
+        let cleanOrigin = sanitizeHeaderValue(configuration.origin)
             .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         if !cleanOrigin.isEmpty {
             request.setValue(cleanOrigin, forHTTPHeaderField: "Origin")

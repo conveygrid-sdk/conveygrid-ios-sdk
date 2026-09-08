@@ -63,6 +63,42 @@ final class SammatiNoticeSDKTests: XCTestCase {
         SammatiNotice.configure(clientId: "quick_client_id", origin: "https://quick.com", theme: theme)
     }
 
+    func testEmptyClientIdThrowsInvalidConfiguration() async {
+        SammatiNotice.configure(clientId: "   ", origin: "https://example.com")
+        do {
+            _ = try await SammatiNotice.validateConsent(
+                identity: ConsentIdentity(sessionId: "s1"),
+                purposeCode: "P1"
+            )
+            XCTFail("Expected invalidConfiguration error")
+        } catch let SammatiSDKError.invalidConfiguration(msg) {
+            XCTAssertTrue(msg.contains("clientId"))
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+    }
+
+    func testEmptyOriginThrowsInvalidConfiguration() async {
+        SammatiNotice.configure(clientId: "client123", origin: "   ")
+        do {
+            _ = try await SammatiNotice.validateConsent(
+                identity: ConsentIdentity(sessionId: "s1"),
+                purposeCode: "P1"
+            )
+            XCTFail("Expected invalidConfiguration error")
+        } catch let SammatiSDKError.invalidConfiguration(msg) {
+            XCTAssertTrue(msg.contains("origin"))
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+    }
+
+    func testWhitespaceSanitizationOnConfiguration() {
+        let config = SammatiConfiguration(clientId: "  my_client  \n", origin: "  https://my-app.com/  \r")
+        XCTAssertEqual(config.clientId, "my_client")
+        XCTAssertEqual(config.origin, "https://my-app.com/")
+    }
+
     func testDateParserAndAgeCalculator() {
         XCTAssertTrue(SammatiNotice.isMinorDateOfBirth("2015-05-10"))
         XCTAssertFalse(SammatiNotice.isMinorDateOfBirth("1985-05-10"))

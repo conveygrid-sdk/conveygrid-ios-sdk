@@ -23,8 +23,8 @@ public struct SammatiConfiguration {
         environment: SammatiEnvironment = SammatiConfiguration.defaultEnvironment,
         theme: NoticeTheme? = nil
     ) {
-        self.clientId = clientId
-        self.origin = origin
+        self.clientId = clientId.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.origin = origin.trimmingCharacters(in: .whitespacesAndNewlines)
         self.environment = environment
         self.theme = theme
         self.apiBaseURL = SammatiConfiguration.defaultAPIBaseURL
@@ -37,8 +37,8 @@ public struct SammatiConfiguration {
         environment: SammatiEnvironment = SammatiConfiguration.defaultEnvironment,
         theme: NoticeTheme? = nil
     ) {
-        self.clientId = clientId
-        self.origin = origin
+        self.clientId = clientId.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.origin = origin.trimmingCharacters(in: .whitespacesAndNewlines)
         self.apiBaseURL = apiBaseURL
         self.environment = environment
         self.theme = theme
@@ -47,6 +47,7 @@ public struct SammatiConfiguration {
 
 public enum SammatiSDKError: LocalizedError {
     case notConfigured
+    case invalidConfiguration(String)
     case invalidNoticeCode
     case invalidDateOfBirth
     case guardianRequired
@@ -66,6 +67,7 @@ public enum SammatiSDKError: LocalizedError {
     public var errorDescription: String? {
         switch self {
         case .notConfigured: return "SammatiNoticeSDK is not configured."
+        case .invalidConfiguration(let message): return "Invalid configuration: \(message)"
         case .invalidNoticeCode: return "noticeCode is required."
         case .invalidDateOfBirth: return "dateOfBirth must be a valid date in YYYY-MM-DD format."
         case .guardianRequired: return "Guardian details are required for minors."
@@ -340,7 +342,7 @@ public final class SammatiNotice {
 
     @MainActor
     private func capture(options: ConsentOptions, presenter: UIViewController?) async throws -> ConsentResult {
-        guard configuration != nil else { throw SammatiSDKError.notConfigured }
+        let config = try validatedConfiguration()
         guard !options.noticeCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw SammatiSDKError.invalidNoticeCode
         }
@@ -369,7 +371,7 @@ public final class SammatiNotice {
         )
 
         if isMinor {
-            return try await MinorConsentFlow(api: APIClient(configuration: configuration!))
+            return try await MinorConsentFlow(api: APIClient(configuration: config))
                 .run(noticeCode: options.noticeCode, identity: identity, presenter: presenter)
         }
 
@@ -395,7 +397,7 @@ public final class SammatiNotice {
             }
         }
 
-        let api = APIClient(configuration: configuration!)
+        let api = APIClient(configuration: config)
         let notice = try await api.fetchPublishedNotice(noticeCode: options.noticeCode, mobile: identity.mobile)
         if !options.forceDisplay && notice.showNotice == false {
             return ConsentResult(
@@ -433,18 +435,31 @@ public final class SammatiNotice {
         return mapped
     }
 
+    private func validatedConfiguration() throws -> SammatiConfiguration {
+        guard let config = configuration else { throw SammatiSDKError.notConfigured }
+        guard !config.clientId.isEmpty else {
+            throw SammatiSDKError.invalidConfiguration("clientId cannot be empty.")
+        }
+        guard !config.origin.isEmpty else {
+            throw SammatiSDKError.invalidConfiguration("origin cannot be empty.")
+        }
+        return config
+    }
+
     private func validate(identity: ConsentIdentity, purposeCode: String, noticeCode: String?) async throws -> ConsentValidation {
-        let api = APIClient(configuration: configuration!)
+        let config = try validatedConfiguration()
+        let api = APIClient(configuration: config)
         return try await api.validate(identity: identity, purposeCode: purposeCode, noticeCode: noticeCode)
     }
 
     private func resume(referenceId: String) async throws -> ConsentResult {
+        let config = try validatedConfiguration()
         guard let pending = PendingLinkStore.load() else { throw SammatiSDKError.noPendingConsent }
         if let expiry = pending.linkExpiresAt, expiry < Date() {
             PendingLinkStore.clear()
             throw SammatiSDKError.consentLinkExpired
         }
-        let api = APIClient(configuration: configuration!)
+        let api = APIClient(configuration: config)
         try await api.linkReference(artifactId: pending.artifactId, preferenceToken: pending.preferenceToken, referenceId: referenceId)
         PendingLinkStore.clear()
         return ConsentResult(
@@ -457,7 +472,8 @@ public final class SammatiNotice {
     }
 
     private func link(mapped: ConsentResult, referenceId: String) async throws -> ConsentResult {
-        let api = APIClient(configuration: configuration!)
+        let config = try validatedConfiguration()
+        let api = APIClient(configuration: config)
         try await api.linkReference(artifactId: mapped.artifactId, preferenceToken: mapped.preferenceToken, referenceId: referenceId)
         PendingLinkStore.clear()
         return ConsentResult(

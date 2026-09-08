@@ -61,10 +61,18 @@ final class GuardianVerificationViewController: UIViewController, WKNavigationDe
         view.backgroundColor = .systemBackground
 
         let targetOrigin = expectedOrigin
+        let encodedOrigin: String
+        if let data = try? JSONEncoder().encode(targetOrigin),
+           let str = String(data: data, encoding: .utf8) {
+            encodedOrigin = str
+        } else {
+            encodedOrigin = "\"\""
+        }
+
         let content = WKUserContentController()
         let script = """
         (function() {
-          var expectedOrigin = "\(targetOrigin)";
+          var expectedOrigin = \(encodedOrigin);
           window.addEventListener('message', function(event) {
             try {
               if (expectedOrigin && event.origin !== expectedOrigin) {
@@ -152,6 +160,12 @@ final class GuardianVerificationViewController: UIViewController, WKNavigationDe
 
         if url.absoluteString == "about:blank" {
             decisionHandler(.allow)
+            return
+        }
+
+        // Strictly allow only secure web schemes (block javascript:, data:, file:, etc.)
+        guard let scheme = url.scheme?.lowercased(), ["https", "http"].contains(scheme) else {
+            decisionHandler(.cancel)
             return
         }
 
