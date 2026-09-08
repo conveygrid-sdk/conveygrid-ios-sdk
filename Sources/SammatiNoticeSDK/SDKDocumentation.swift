@@ -9,11 +9,19 @@ Usage:
 
     import SammatiNoticeSDK
 
+    // Mandatory parameters (clientId and origin):
     SammatiNotice.configure(
         SammatiConfiguration(
             clientId: "YOUR_CLIENT_ID",
-            apiBaseURL: URL(string: "https://samatigridapidev.rysun.in")!,
-            environment: .sandbox,
+            origin: "https://your-app-domain.com"
+        )
+    )
+
+    // Or with optional global theme fallback:
+    SammatiNotice.configure(
+        SammatiConfiguration(
+            clientId: "YOUR_CLIENT_ID",
+            origin: "https://your-app-domain.com",
             theme: NoticeTheme(
                 primaryColor: "#005BED",
                 secondaryColor: "#F2621B",

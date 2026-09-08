@@ -7,21 +7,41 @@ public enum SammatiEnvironment {
 }
 
 public struct SammatiConfiguration {
+    internal static let defaultAPIBaseURL = URL(string: "https://samatigridapidev.rysun.in")!
+    public static let defaultEnvironment: SammatiEnvironment = .sandbox
+
     public let clientId: String
-    public let apiBaseURL: URL
+    public let origin: String
     public let environment: SammatiEnvironment
-    public let origin: String?
+    public let theme: NoticeTheme?
+
+    internal let apiBaseURL: URL
 
     public init(
         clientId: String,
-        apiBaseURL: URL,
-        environment: SammatiEnvironment = .production,
-        origin: String? = nil
+        origin: String,
+        environment: SammatiEnvironment = SammatiConfiguration.defaultEnvironment,
+        theme: NoticeTheme? = nil
     ) {
         self.clientId = clientId
+        self.origin = origin
+        self.environment = environment
+        self.theme = theme
+        self.apiBaseURL = SammatiConfiguration.defaultAPIBaseURL
+    }
+
+    internal init(
+        clientId: String,
+        origin: String,
+        apiBaseURL: URL,
+        environment: SammatiEnvironment = SammatiConfiguration.defaultEnvironment,
+        theme: NoticeTheme? = nil
+    ) {
+        self.clientId = clientId
+        self.origin = origin
         self.apiBaseURL = apiBaseURL
         self.environment = environment
-        self.origin = origin
+        self.theme = theme
     }
 }
 
@@ -102,6 +122,7 @@ public struct ConsentOptions: Sendable {
     public let purposeCodes: [String]
     public let forceDisplay: Bool
     public let skipIfValid: Bool
+    public let theme: NoticeTheme?
 
     public init(
         noticeCode: String,
@@ -117,7 +138,8 @@ public struct ConsentOptions: Sendable {
         purposeCode: String? = nil,
         purposeCodes: [String] = [],
         forceDisplay: Bool = false,
-        skipIfValid: Bool = true
+        skipIfValid: Bool = true,
+        theme: NoticeTheme? = nil
     ) {
         self.noticeCode = noticeCode
         self.email = email
@@ -133,6 +155,7 @@ public struct ConsentOptions: Sendable {
         self.purposeCodes = purposeCodes
         self.forceDisplay = forceDisplay
         self.skipIfValid = skipIfValid
+        self.theme = theme
     }
 }
 
@@ -249,6 +272,22 @@ public final class SammatiNotice {
 
     public static func configure(_ configuration: SammatiConfiguration) {
         shared.configuration = configuration
+    }
+
+    public static func configure(
+        clientId: String,
+        origin: String,
+        environment: SammatiEnvironment = SammatiConfiguration.defaultEnvironment,
+        theme: NoticeTheme? = nil
+    ) {
+        configure(
+            SammatiConfiguration(
+                clientId: clientId,
+                origin: origin,
+                environment: environment,
+                theme: theme
+            )
+        )
     }
 
     public static func getSessionId() -> String {
@@ -372,7 +411,12 @@ public final class SammatiNotice {
             throw SammatiSDKError.serverError("A presenting UIViewController is required to display the consent notice.")
         }
 
-        let selection = try await ConsentViewController.present(notice: notice, presenter: presenter)
+        let baseTheme = NoticeTheme()
+        let withConfig = configuration?.theme?.merged(with: baseTheme) ?? baseTheme
+        let withNotice = notice.theme?.merged(with: withConfig) ?? withConfig
+        let activeTheme = options.theme?.merged(with: withNotice) ?? withNotice
+
+        let selection = try await ConsentViewController.present(notice: notice, theme: activeTheme, presenter: presenter)
         if selection.cancelled { throw SammatiSDKError.cancelled }
 
         let result = try await api.submit(notice: notice, choices: selection.choices, identity: identity, language: selection.language)

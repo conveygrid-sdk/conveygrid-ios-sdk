@@ -9,8 +9,7 @@ final class DemoViewController: UIViewController {
         SammatiNotice.configure(
             SammatiConfiguration(
                 clientId: "YOUR_CLIENT_ID",
-                apiBaseURL: URL(string: "https://YOUR_API_BASE")!,
-                environment: .sandbox
+                origin: "https://demo.example.com"
             )
         )
 

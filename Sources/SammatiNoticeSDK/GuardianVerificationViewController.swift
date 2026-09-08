@@ -15,6 +15,22 @@ final class GuardianVerificationViewController: UIViewController, WKNavigationDe
     private var completion: ((Result) -> Void)?
     private var webView: WKWebView!
 
+    private var expectedOrigin: String {
+        guard let url = URL(string: frameURL),
+              let scheme = url.scheme,
+              let host = url.host else {
+            return ""
+        }
+        if let port = url.port {
+            return "\(scheme)://\(host):\(port)"
+        }
+        return "\(scheme)://\(host)"
+    }
+
+    private var expectedHost: String? {
+        URL(string: frameURL)?.host?.lowercased()
+    }
+
     static func present(
         frameURL: String,
         sessionToken: String,
@@ -44,11 +60,16 @@ final class GuardianVerificationViewController: UIViewController, WKNavigationDe
         title = "Guardian Verification"
         view.backgroundColor = .systemBackground
 
+        let targetOrigin = expectedOrigin
         let content = WKUserContentController()
         let script = """
         (function() {
+          var expectedOrigin = "\(targetOrigin)";
           window.addEventListener('message', function(event) {
             try {
+              if (expectedOrigin && event.origin !== expectedOrigin) {
+                return;
+              }
               if (event && event.data && event.data.type === 'sammati-guardian-realtime') {
                 window.webkit.messageHandlers.sammatiGuardian.postMessage(event.data);
               }
@@ -97,6 +118,14 @@ final class GuardianVerificationViewController: UIViewController, WKNavigationDe
     }
 
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+        if let frameHost = message.frameInfo.securityOrigin.host.lowercased() as String?,
+           let expected = expectedHost,
+           !expected.isEmpty {
+            guard frameHost == expected || frameHost.hasSuffix(".\(expected)") else {
+                return
+            }
+        }
+
         guard message.name == "sammatiGuardian",
               let data = message.body as? [String: Any],
               let status = data["status"] as? String else { return }
@@ -109,6 +138,31 @@ final class GuardianVerificationViewController: UIViewController, WKNavigationDe
             allMandatoryGranted: data["allMandatoryGranted"] as? Bool ?? false,
             message: data["message"] as? String
         ))
+    }
+
+    func webView(
+        _ webView: WKWebView,
+        decidePolicyFor navigationAction: WKNavigationAction,
+        decisionHandler: @escaping (WKNavigationActionPolicy) -> Void
+    ) {
+        guard let url = navigationAction.request.url else {
+            decisionHandler(.cancel)
+            return
+        }
+
+        if url.absoluteString == "about:blank" {
+            decisionHandler(.allow)
+            return
+        }
+
+        if let host = url.host?.lowercased(), let expected = expectedHost {
+            if host == expected || host.hasSuffix(".\(expected)") {
+                decisionHandler(.allow)
+                return
+            }
+        }
+
+        decisionHandler(.cancel)
     }
 
     @objc private func cancel() {

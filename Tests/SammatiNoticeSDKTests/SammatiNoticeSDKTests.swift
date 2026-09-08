@@ -17,10 +17,50 @@ final class SammatiNoticeSDKTests: XCTestCase {
     func testConfigurationCanBeCreated() {
         let configuration = SammatiConfiguration(
             clientId: "test",
+            origin: "https://test.com",
             apiBaseURL: URL(string: "https://example.com")!,
             environment: .sandbox
         )
         XCTAssertEqual(configuration.clientId, "test")
+        XCTAssertEqual(configuration.origin, "https://test.com")
+    }
+
+    func testConfigurationRequiresClientIdAndOriginWithDefaults() {
+        let configuration = SammatiConfiguration(
+            clientId: "my_app_client_id",
+            origin: "https://my-app.com"
+        )
+        XCTAssertEqual(configuration.clientId, "my_app_client_id")
+        XCTAssertEqual(configuration.origin, "https://my-app.com")
+        XCTAssertEqual(configuration.apiBaseURL, URL(string: "https://samatigridapidev.rysun.in")!)
+        XCTAssertEqual(configuration.environment, .sandbox)
+        XCTAssertNil(configuration.theme)
+    }
+
+    func testConfigurationWithOptionalTheme() {
+        let theme = NoticeTheme(
+            primaryColor: "#005BED",
+            secondaryColor: "#F2621B",
+            fontFamily: "HelveticaNeue"
+        )
+        let configuration = SammatiConfiguration(
+            clientId: "my_app_client_id",
+            origin: "https://my-app.com",
+            theme: theme
+        )
+        XCTAssertEqual(configuration.clientId, "my_app_client_id")
+        XCTAssertEqual(configuration.origin, "https://my-app.com")
+        XCTAssertEqual(configuration.apiBaseURL, SammatiConfiguration.defaultAPIBaseURL)
+        XCTAssertEqual(configuration.environment, SammatiConfiguration.defaultEnvironment)
+        XCTAssertEqual(configuration.theme?.primaryColor, "#005BED")
+        XCTAssertEqual(configuration.theme?.secondaryColor, "#F2621B")
+        XCTAssertEqual(configuration.theme?.fontFamily, "HelveticaNeue")
+    }
+
+    func testConvenienceConfigure() {
+        SammatiNotice.configure(clientId: "quick_client_id", origin: "https://quick.com")
+        let theme = NoticeTheme(primaryColor: "#005BED")
+        SammatiNotice.configure(clientId: "quick_client_id", origin: "https://quick.com", theme: theme)
     }
 
     func testDateParserAndAgeCalculator() {
@@ -66,6 +106,36 @@ final class SammatiNoticeSDKTests: XCTestCase {
     func testLanguageStore() {
         XCTAssertEqual(LanguageStore.normalize("  HI-IN  "), "hi-in")
         XCTAssertEqual(LanguageStore.normalize(""), "en")
+    }
+
+    func testKeychainStore() {
+        let testKey = "test_security_key"
+        KeychainStore.delete(forKey: testKey)
+
+        XCTAssertTrue(KeychainStore.save(string: "secure_value_123", forKey: testKey))
+        XCTAssertEqual(KeychainStore.loadString(forKey: testKey), "secure_value_123")
+
+        KeychainStore.delete(forKey: testKey)
+        XCTAssertNil(KeychainStore.loadString(forKey: testKey))
+    }
+
+    func testPendingLinkMigrationFromUserDefaults() {
+        let testKey = "sammati_notice_pending_link"
+        KeychainStore.delete(forKey: testKey)
+
+        // Simulate legacy UserDefaults entry
+        let pending = PendingConsent(artifactId: "legacy_art", preferenceToken: "legacy_tok", linkExpiresAt: nil)
+        let legacyData = try! JSONEncoder().encode(pending)
+        UserDefaults.standard.set(legacyData, forKey: testKey)
+
+        // Load via PendingLinkStore should migrate to Keychain and clean UserDefaults
+        let loaded = PendingLinkStore.load()
+        XCTAssertEqual(loaded?.artifactId, "legacy_art")
+        XCTAssertEqual(loaded?.preferenceToken, "legacy_tok")
+        XCTAssertNil(UserDefaults.standard.data(forKey: testKey))
+
+        PendingLinkStore.clear()
+        XCTAssertNil(PendingLinkStore.load())
     }
 }
 

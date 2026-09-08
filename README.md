@@ -52,16 +52,26 @@ targets: [
 
 ## ⚙️ Configuration
 
-Initialize the SDK early in your application lifecycle (e.g. `AppDelegate` or `@main` App init):
+Initialize the SDK early in your application lifecycle (e.g. `AppDelegate` or `@main` App init).
+
+The integrating application only needs to provide `clientId` and `origin`. SDK API endpoints are managed securely and internally by the SDK.
 
 ```swift
 import SammatiNoticeSDK
 
+// Standard Configuration:
 SammatiNotice.configure(
     SammatiConfiguration(
         clientId: "YOUR_CLIENT_ID",
-        apiBaseURL: URL(string: "https://samatigridapidev.rysun.in")!,
-        environment: .sandbox, // or .production
+        origin: "https://your-app-domain.com"
+    )
+)
+
+// Or with optional global theme fallback:
+SammatiNotice.configure(
+    SammatiConfiguration(
+        clientId: "YOUR_CLIENT_ID",
+        origin: "https://your-app-domain.com",
         theme: NoticeTheme(    // Optional global theme fallback
             primaryColor: "#005BED",
             secondaryColor: "#F2621B",
@@ -70,6 +80,18 @@ SammatiNotice.configure(
     )
 )
 ```
+
+> [!NOTE]
+> The environment defaults to `.sandbox`. When deploying to production, specify `.production`:
+> ```swift
+> SammatiNotice.configure(
+>     SammatiConfiguration(
+>         clientId: "YOUR_CLIENT_ID",
+>         origin: "https://your-app-domain.com",
+>         environment: .production
+>     )
+> )
+> ```
 
 ---
 

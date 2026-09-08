@@ -3,9 +3,16 @@ import Foundation
 final class APIClient {
     private let configuration: SammatiConfiguration
     private let decoder = JSONDecoder()
+    private let session: URLSession
 
     init(configuration: SammatiConfiguration) {
         self.configuration = configuration
+        let sessionConfig = URLSessionConfiguration.default
+        sessionConfig.timeoutIntervalForRequest = 30.0
+        sessionConfig.timeoutIntervalForResource = 60.0
+        sessionConfig.tlsMinimumSupportedProtocolVersion = .TLSv12
+        sessionConfig.requestCachePolicy = .reloadIgnoringLocalCacheData
+        self.session = URLSession(configuration: sessionConfig)
     }
 
     private func request<T: Decodable>(
@@ -19,45 +26,27 @@ final class APIClient {
             throw SammatiSDKError.invalidResponse
         }
 
+        guard url.scheme == "https" || configuration.environment == .sandbox else {
+            throw SammatiSDKError.serverError("Insecure HTTP connections are not allowed in production.")
+        }
+
         var request = URLRequest(url: url)
         request.httpMethod = method
         request.httpBody = body
         request.cachePolicy = .reloadIgnoringLocalCacheData
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue(configuration.clientId, forHTTPHeaderField: "X-Application-Key")
-        if let origin = configuration.origin, !origin.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            let cleanOrigin = origin.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let cleanOrigin = configuration.origin.trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        if !cleanOrigin.isEmpty {
             request.setValue(cleanOrigin, forHTTPHeaderField: "Origin")
             request.setValue("\(cleanOrigin)/", forHTTPHeaderField: "Referer")
         }
 
-        let bodyStr = body != nil ? (String(data: body!, encoding: .utf8) ?? "<binary data>") : "None"
-        print("""
-        ==================================================
-        🌐 [SammatiNoticeSDK API Request]
-        ➡️ Method: \(method)
-        🔗 URL: \(url.absoluteString)
-        📋 Headers:
-        \(request.allHTTPHeaderFields?.map { "   • \($0.key): \($0.value)" }.joined(separator: "\n") ?? "")
-        📦 Body: \(bodyStr)
-        ==================================================
-        """)
-
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await session.data(for: request)
         guard let http = response as? HTTPURLResponse else {
-            print("❌ [SammatiNoticeSDK Network Error] Non-HTTP response returned.")
             throw SammatiSDKError.invalidResponse
         }
-
-        let responseStr = String(data: data, encoding: .utf8) ?? "<non-text data>"
-        print("""
-        ==================================================
-        📥 [SammatiNoticeSDK API Response]
-        ⬅️ Status Code: \(http.statusCode)
-        🔗 URL: \(url.absoluteString)
-        📄 Response Body: \(responseStr)
-        ==================================================
-        """)
 
         let envelope = try? decoder.decode(APIEnvelope<T>.self, from: data)
         if !(200..<300).contains(http.statusCode) {
@@ -76,7 +65,9 @@ final class APIClient {
     }
 
     func fetchPublishedNotice(noticeCode: String, mobile: String?) async throws -> Notice {
-        let path = "/api/v1/public/consent/notices/\(noticeCode.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? noticeCode)/published"
+        let safeChars = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_.~"))
+        let safeNoticeCode = noticeCode.addingPercentEncoding(withAllowedCharacters: safeChars) ?? noticeCode
+        let path = "/api/v1/public/consent/notices/\(safeNoticeCode)/published"
         if let mobile, !mobile.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             let body = try JSONSerialization.data(withJSONObject: ["mobile": mobile])
             let mobileNotice: Notice = try await request(path: path, method: "POST", body: body)

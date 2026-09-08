@@ -1,15 +1,90 @@
 import Foundation
 import UIKit
+import Security
+
+
+enum KeychainStore {
+    private static let service = "in.sammati.sdk.secure"
+    private static var memoryFallback: [String: Data] = [:]
+
+    @discardableResult
+    static func save(data: Data, forKey key: String) -> Bool {
+        delete(forKey: key)
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: key,
+            kSecValueData as String: data,
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock
+        ]
+        let status = SecItemAdd(query as CFDictionary, nil)
+        if status != errSecSuccess {
+            memoryFallback[key] = data
+            return true
+        }
+        return true
+    }
+
+    @discardableResult
+    static func save(string: String, forKey key: String) -> Bool {
+        guard let data = string.data(using: .utf8) else { return false }
+        return save(data: data, forKey: key)
+    }
+
+    static func loadData(forKey key: String) -> Data? {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: key,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne
+        ]
+        var result: AnyObject?
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        if status == errSecSuccess, let data = result as? Data {
+            return data
+        }
+        return memoryFallback[key]
+    }
+
+    static func loadString(forKey key: String) -> String? {
+        guard let data = loadData(forKey: key) else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
+    static func delete(forKey key: String) {
+        memoryFallback.removeValue(forKey: key)
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: key
+        ]
+        SecItemDelete(query as CFDictionary)
+    }
+}
 
 final class SessionStore {
     private let key = "sammati_cid"
+    private var inMemorySessionId: String?
 
     var sessionId: String {
-        if let existing = UserDefaults.standard.string(forKey: key), !existing.isEmpty {
+        if let inMemorySessionId, !inMemorySessionId.isEmpty {
+            return inMemorySessionId
+        }
+        if let existing = KeychainStore.loadString(forKey: key), !existing.isEmpty {
+            inMemorySessionId = existing
             return existing
         }
+        // Migrate from UserDefaults if previously stored
+        if let legacy = UserDefaults.standard.string(forKey: key), !legacy.isEmpty {
+            KeychainStore.save(string: legacy, forKey: key)
+            UserDefaults.standard.removeObject(forKey: key)
+            inMemorySessionId = legacy
+            return legacy
+        }
         let id = UUID().uuidString.lowercased()
-        UserDefaults.standard.set(id, forKey: key)
+        KeychainStore.save(string: id, forKey: key)
+        inMemorySessionId = id
         return id
     }
 }
@@ -85,7 +160,7 @@ struct PendingConsent: Codable {
 }
 
 enum PendingLinkStore {
-    static let key = "sammati_notice_pending_link"
+    private static let key = "sammati_notice_pending_link"
 
     static func save(result: ConsentResult) {
         let value = PendingConsent(
@@ -94,16 +169,26 @@ enum PendingLinkStore {
             linkExpiresAt: result.linkExpiresAt
         )
         if let data = try? JSONEncoder().encode(value) {
-            UserDefaults.standard.set(data, forKey: key)
+            KeychainStore.save(data: data, forKey: key)
         }
+        UserDefaults.standard.removeObject(forKey: key)
     }
 
     static func load() -> PendingConsent? {
-        guard let data = UserDefaults.standard.data(forKey: key) else { return nil }
-        return try? JSONDecoder().decode(PendingConsent.self, from: data)
+        if let data = KeychainStore.loadData(forKey: key) {
+            return try? JSONDecoder().decode(PendingConsent.self, from: data)
+        }
+        // Migrate from UserDefaults if previously stored
+        if let legacyData = UserDefaults.standard.data(forKey: key) {
+            KeychainStore.save(data: legacyData, forKey: key)
+            UserDefaults.standard.removeObject(forKey: key)
+            return try? JSONDecoder().decode(PendingConsent.self, from: legacyData)
+        }
+        return nil
     }
 
     static func clear() {
+        KeychainStore.delete(forKey: key)
         UserDefaults.standard.removeObject(forKey: key)
     }
 }

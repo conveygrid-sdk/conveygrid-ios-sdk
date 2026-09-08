@@ -157,9 +157,14 @@ final class ConsentViewController: UIViewController {
             logoImageView.image = image
             logoImageView.isHidden = false
             brandLabel.isHidden = true
-        } else if let logoURLString = theme.logoURL, let url = URL(string: logoURLString) {
+        } else if let logoURLString = theme.logoURL,
+                  let url = URL(string: logoURLString),
+                  url.scheme?.lowercased() == "https" {
             Task {
-                if let (data, _) = try? await URLSession.shared.data(from: url), let img = UIImage(data: data) {
+                let config = URLSessionConfiguration.ephemeral
+                config.timeoutIntervalForRequest = 5.0
+                let session = URLSession(configuration: config)
+                if let (data, _) = try? await session.data(from: url), let img = UIImage(data: data) {
                     await MainActor.run {
                         logoImageView.image = img
                         logoImageView.isHidden = false
