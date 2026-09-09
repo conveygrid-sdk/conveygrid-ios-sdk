@@ -50,7 +50,7 @@ final class SammatiNoticeSDKTests: XCTestCase {
         )
         XCTAssertEqual(configuration.clientId, "my_app_client_id")
         XCTAssertEqual(configuration.origin, "https://my-app.com")
-        XCTAssertEqual(configuration.apiBaseURL, SammatiConfiguration.defaultAPIBaseURL)
+        XCTAssertEqual(configuration.apiBaseURL, SammatiConfiguration.defaultEnvironment.defaultBaseURL)
         XCTAssertEqual(configuration.environment, SammatiConfiguration.defaultEnvironment)
         XCTAssertEqual(configuration.theme?.primaryColor, "#005BED")
         XCTAssertEqual(configuration.theme?.secondaryColor, "#F2621B")
@@ -172,6 +172,81 @@ final class SammatiNoticeSDKTests: XCTestCase {
 
         PendingLinkStore.clear()
         XCTAssertNil(PendingLinkStore.load())
+    }
+
+    func testProductionConfigurationMapsToProductionBaseURL() {
+        let configuration = SammatiConfiguration(
+            clientId: "my_app_client_id",
+            origin: "https://my-app.com",
+            environment: .production
+        )
+        XCTAssertEqual(configuration.environment, .production)
+        XCTAssertEqual(configuration.apiBaseURL, URL(string: "https://samatigridapi.rysun.in")!)
+    }
+
+    func testCodableRequestsEncodeWithoutCrashingOnNilOptionals() throws {
+        let validateReq = ValidateRequest(
+            purposeCode: "P1",
+            noticeCode: nil,
+            referenceId: nil,
+            sessionId: "s1"
+        )
+        let validateData = try JSONEncoder().encode(validateReq)
+        XCTAssertFalse(validateData.isEmpty)
+        let jsonStr = String(data: validateData, encoding: .utf8)
+        XCTAssertTrue(jsonStr!.contains("\"purpose_code\":\"P1\""))
+        XCTAssertFalse(jsonStr!.contains("notice_code"))
+        XCTAssertFalse(jsonStr!.contains("reference_id"))
+
+        let submitReq = SubmitRequest(
+            noticeId: "N1",
+            version: "1.0",
+            choices: [SubmitChoice(purposeId: "P1", granted: true)],
+            language: "en",
+            pageUrl: "https://example.com",
+            subject: SubmitSubject(sessionId: "s1", referenceId: nil, email: nil, mobile: nil, fullName: nil),
+            subjectRef: nil,
+            dataPrincipal: SubmitDataPrincipal(dateOfBirth: nil, fullName: nil, email: nil, mobile: nil, preferredLanguage: "en"),
+            guardian: nil
+        )
+        let submitData = try JSONEncoder().encode(submitReq)
+        XCTAssertFalse(submitData.isEmpty)
+        let submitJson = String(data: submitData, encoding: .utf8)
+        XCTAssertFalse(submitJson!.contains("subject_ref"))
+        XCTAssertFalse(submitJson!.contains("guardian"))
+        XCTAssertFalse(submitJson!.contains("1990-01-01"))
+    }
+
+    func testKeychainStoreThreadSafety() {
+        DispatchQueue.concurrentPerform(iterations: 100) { i in
+            let key = "concurrent_key_\(i % 5)"
+            _ = KeychainStore.save(string: "val_\(i)", forKey: key)
+            _ = KeychainStore.loadString(forKey: key)
+            if i % 2 == 0 {
+                KeychainStore.delete(forKey: key)
+            }
+        }
+    }
+
+    func testHTTPSEnforcementOnInsecureURL() async {
+        let insecureConfig = SammatiConfiguration(
+            clientId: "test_client",
+            origin: "https://example.com",
+            apiBaseURL: URL(string: "http://insecure-api.example.com")!,
+            environment: .production
+        )
+        SammatiNotice.configure(insecureConfig)
+        do {
+            _ = try await SammatiNotice.validateConsent(
+                identity: ConsentIdentity(sessionId: "s1"),
+                purposeCode: "P1"
+            )
+            XCTFail("Expected insecure HTTP connection error")
+        } catch let SammatiSDKError.serverError(msg) {
+            XCTAssertTrue(msg.contains("Insecure HTTP connections are not allowed"))
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
     }
 }
 

@@ -300,8 +300,15 @@ struct SubmitResponse: Codable, Sendable {
     }
 }
 
+struct APIErrorDetail: Decodable, Sendable {
+    let code: String?
+    let field: String?
+    let message: String?
+}
+
 struct APIEnvelope<T: Decodable>: Decodable {
     let success: Bool?
     let data: T?
     let message: String?
+    let errors: [APIErrorDetail]?
 }

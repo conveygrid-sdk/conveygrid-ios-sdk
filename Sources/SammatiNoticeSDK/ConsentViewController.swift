@@ -164,7 +164,10 @@ final class ConsentViewController: UIViewController {
                 let config = URLSessionConfiguration.ephemeral
                 config.timeoutIntervalForRequest = 5.0
                 let session = URLSession(configuration: config)
-                if let (data, _) = try? await session.data(from: url), let img = UIImage(data: data) {
+                if let (data, response) = try? await session.data(from: url),
+                   (response as? HTTPURLResponse)?.statusCode == 200,
+                   data.count <= 2 * 1024 * 1024,
+                   let img = UIImage(data: data) {
                     await MainActor.run {
                         logoImageView.image = img
                         logoImageView.isHidden = false

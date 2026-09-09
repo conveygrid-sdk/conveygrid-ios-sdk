@@ -3,6 +3,7 @@ import Foundation
 final class APIClient {
     private let configuration: SammatiConfiguration
     private let decoder = JSONDecoder()
+    private let encoder = JSONEncoder()
     private let session: URLSession
 
     init(configuration: SammatiConfiguration) {
@@ -33,8 +34,9 @@ final class APIClient {
             throw SammatiSDKError.invalidResponse
         }
 
-        guard url.scheme == "https" || configuration.environment == .sandbox else {
-            throw SammatiSDKError.serverError("Insecure HTTP connections are not allowed in production.")
+        let isLocalhost = url.host == "localhost" || url.host == "127.0.0.1"
+        guard url.scheme == "https" || (configuration.environment == .sandbox && isLocalhost) else {
+            throw SammatiSDKError.serverError("Insecure HTTP connections are not allowed. Only HTTPS is supported.")
         }
 
         var request = URLRequest(url: url)
@@ -60,29 +62,42 @@ final class APIClient {
 
         let envelope = try? decoder.decode(APIEnvelope<T>.self, from: data)
         if !(200..<300).contains(http.statusCode) {
-            throw SammatiSDKError.serverError(envelope?.message ?? HTTPURLResponse.localizedString(forStatusCode: http.statusCode))
+            let errorDetails = envelope?.errors?.compactMap { item -> String? in
+                if let field = item.field, let msg = item.message {
+                    return "\(field): \(msg)"
+                }
+                return item.message
+            }.joined(separator: "; ")
+
+            let errMsg: String
+            if let errorDetails, !errorDetails.isEmpty {
+                errMsg = "\(envelope?.message ?? "Error"): \(errorDetails)"
+            } else {
+                errMsg = envelope?.message ?? HTTPURLResponse.localizedString(forStatusCode: http.statusCode)
+            }
+            throw SammatiSDKError.serverError(errMsg)
         }
 
-        if let envelope, envelope.success == true, let value = envelope.data {
-            return value
+        if let envelope, let payload = envelope.data {
+            return payload
         }
-
         if let direct = try? decoder.decode(T.self, from: data) {
             return direct
         }
-
-        throw SammatiSDKError.serverError(envelope?.message ?? "Invalid API response.")
+        throw SammatiSDKError.invalidResponse
     }
 
-    func fetchPublishedNotice(noticeCode: String, mobile: String?) async throws -> Notice {
+    func fetchPublishedNotice(noticeCode: String, mobile: String? = nil) async throws -> Notice {
         let safeChars = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_.~"))
         let safeNoticeCode = noticeCode.addingPercentEncoding(withAllowedCharacters: safeChars) ?? noticeCode
         let path = "/api/v1/public/consent/notices/\(safeNoticeCode)/published"
-        if let mobile, !mobile.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            let body = try JSONSerialization.data(withJSONObject: ["mobile": mobile])
-            let mobileNotice: Notice = try await request(path: path, method: "POST", body: body)
-            if mobileNotice.purposes.isEmpty || mobileNotice.noticeId == nil {
-                if let baseNotice: Notice = try? await request(path: path, method: "GET") {
+        if let mobile, !mobile.isEmpty {
+            let encodedMobile = mobile.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? mobile
+            let mobileNotice: Notice = try await request(path: "\(path)?mobile=\(encodedMobile)")
+            if mobileNotice.showNotice == false {
+                let baseNotice: Notice = try await request(path: path)
+                let show = mobileNotice.showNotice ?? baseNotice.showNotice
+                if show == false {
                     return Notice(
                         noticeId: baseNotice.noticeId,
                         noticeCode: baseNotice.noticeCode,
@@ -107,68 +122,75 @@ final class APIClient {
     }
 
     func validate(identity: ConsentIdentity, purposeCode: String, noticeCode: String?) async throws -> ConsentValidation {
-        var body: [String: Any] = [
-            "purpose_code": purposeCode,
-            "notice_code": noticeCode as Any,
-            "reference_id": identity.referenceId as Any,
-            "session_id": identity.sessionId
-        ]
-        body = body.compactMapValues { $0 is NSNull ? nil : $0 }
-        let data = try JSONSerialization.data(withJSONObject: body)
+        let req = ValidateRequest(
+            purposeCode: purposeCode,
+            noticeCode: noticeCode,
+            referenceId: identity.referenceId,
+            sessionId: identity.sessionId
+        )
+        let data = try encoder.encode(req)
         return try await request(path: "/api/v1/public/consent/validate", method: "POST", body: data)
     }
 
     func submit(notice: Notice, choices: [ConsentChoice], identity: ConsentIdentity, language: String) async throws -> SubmitResponse {
-        var subject: [String: Any] = [
-            "sessionId": identity.sessionId,
-            "referenceId": identity.referenceId as Any,
-            "email": identity.email as Any,
-            "mobile": identity.mobile as Any
-        ]
-        if let fullName = identity.fullName { subject["fullName"] = fullName }
-        subject = subject.compactMapValues { $0 is NSNull ? nil : $0 }
+        let subject: SubmitSubject? = identity.subjectRef != nil ? nil : SubmitSubject(
+            sessionId: identity.sessionId,
+            referenceId: identity.referenceId,
+            email: identity.email,
+            mobile: identity.mobile,
+            fullName: identity.fullName
+        )
 
-        var body: [String: Any] = [
-            "notice_id": notice.noticeId as Any,
-            "version": notice.version as Any,
-            "choices": choices.map { ["purpose_id": $0.purposeId, "granted": $0.granted] },
-            "language": language,
-            "page_url": NSNull(),
-            "subject": subject
-        ]
-
-        if let subjectRef = identity.subjectRef {
-            body["subject_ref"] = subjectRef
-            body.removeValue(forKey: "subject")
+        let dp: SubmitDataPrincipal?
+        if let dob = identity.dateOfBirth?.trimmingCharacters(in: .whitespacesAndNewlines), !dob.isEmpty {
+            dp = SubmitDataPrincipal(
+                dateOfBirth: dob,
+                fullName: identity.fullName?.isEmpty == false ? identity.fullName : nil,
+                email: identity.email?.isEmpty == false ? identity.email?.lowercased() : nil,
+                mobile: identity.mobile?.isEmpty == false ? identity.mobile?.filter(\.isNumber) : nil,
+                preferredLanguage: language
+            )
+        } else {
+            dp = nil
         }
 
-        let dob = identity.dateOfBirth ?? "1990-01-01"
-        var dp: [String: Any] = ["dateOfBirth": dob]
-        if let name = identity.fullName, !name.isEmpty { dp["fullName"] = name }
-        if let email = identity.email, !email.isEmpty { dp["email"] = email.lowercased() }
-        if let mobile = identity.mobile, !mobile.isEmpty { dp["mobile"] = mobile.filter(\.isNumber) }
-        dp["preferredLanguage"] = language
-        body["dataPrincipal"] = dp
-
-        if let guardian = identity.guardian {
-            var g: [String: Any] = ["guardianName": guardian.guardianName]
-            if let v = guardian.guardianEmail { g["guardianEmail"] = v.lowercased() }
-            if let v = guardian.guardianMobile { g["guardianMobile"] = v.filter(\.isNumber) }
-            if let v = guardian.relationshipCode { g["relationshipCode"] = v.uppercased() }
-            if let v = guardian.relationshipId { g["relationshipId"] = v }
-            body["guardian"] = g
+        let guardian: SubmitGuardian?
+        if let g = identity.guardian {
+            guardian = SubmitGuardian(
+                guardianName: g.guardianName,
+                guardianEmail: g.guardianEmail?.lowercased(),
+                guardianMobile: g.guardianMobile?.filter(\.isNumber),
+                relationshipCode: g.relationshipCode?.uppercased(),
+                relationshipId: g.relationshipId
+            )
+        } else {
+            guardian = nil
         }
 
-        let data = try JSONSerialization.data(withJSONObject: body)
+        let submitChoices = choices.map { SubmitChoice(purposeId: $0.purposeId, granted: $0.granted) }
+
+        let req = SubmitRequest(
+            noticeId: notice.noticeId,
+            version: notice.version,
+            choices: submitChoices,
+            language: language,
+            pageUrl: nil,
+            subject: subject,
+            subjectRef: identity.subjectRef,
+            dataPrincipal: dp,
+            guardian: guardian
+        )
+
+        let data = try encoder.encode(req)
         return try await request(path: "/api/v1/public/consent/notices/submit", method: "POST", body: data)
     }
 
     func linkReference(artifactId: String?, preferenceToken: String?, referenceId: String) async throws {
-        var body: [String: Any] = ["referenceId": referenceId]
-        if let artifactId { body["artifactId"] = artifactId }
-        else if let preferenceToken { body["preferenceToken"] = preferenceToken }
-        else { throw SammatiSDKError.invalidResponse }
-        let data = try JSONSerialization.data(withJSONObject: body)
+        guard artifactId != nil || preferenceToken != nil else {
+            throw SammatiSDKError.invalidResponse
+        }
+        let req = LinkReferenceRequest(referenceId: referenceId, artifactId: artifactId, preferenceToken: preferenceToken)
+        let data = try encoder.encode(req)
         let _: EmptyResponse = try await request(path: "/api/v1/public/consent/artifacts/link-reference", method: "POST", body: data)
     }
 
@@ -195,3 +217,81 @@ final class APIClient {
 }
 
 struct EmptyResponse: Decodable, Sendable {}
+
+struct ValidateRequest: Encodable {
+    let purposeCode: String
+    let noticeCode: String?
+    let referenceId: String?
+    let sessionId: String
+
+    enum CodingKeys: String, CodingKey {
+        case purposeCode = "purpose_code"
+        case noticeCode = "notice_code"
+        case referenceId = "reference_id"
+        case sessionId = "session_id"
+    }
+}
+
+struct SubmitRequest: Encodable {
+    let noticeId: String?
+    let version: String?
+    let choices: [SubmitChoice]
+    let language: String
+    let pageUrl: String?
+    let subject: SubmitSubject?
+    let subjectRef: String?
+    let dataPrincipal: SubmitDataPrincipal?
+    let guardian: SubmitGuardian?
+
+    enum CodingKeys: String, CodingKey {
+        case noticeId = "notice_id"
+        case version
+        case choices
+        case language
+        case pageUrl = "page_url"
+        case subject
+        case subjectRef = "subject_ref"
+        case dataPrincipal
+        case guardian
+    }
+}
+
+struct SubmitChoice: Encodable {
+    let purposeId: String
+    let granted: Bool
+
+    enum CodingKeys: String, CodingKey {
+        case purposeId = "purpose_id"
+        case granted
+    }
+}
+
+struct SubmitSubject: Encodable {
+    let sessionId: String
+    let referenceId: String?
+    let email: String?
+    let mobile: String?
+    let fullName: String?
+}
+
+struct SubmitDataPrincipal: Encodable {
+    let dateOfBirth: String
+    let fullName: String?
+    let email: String?
+    let mobile: String?
+    let preferredLanguage: String
+}
+
+struct SubmitGuardian: Encodable {
+    let guardianName: String
+    let guardianEmail: String?
+    let guardianMobile: String?
+    let relationshipCode: String?
+    let relationshipId: String?
+}
+
+struct LinkReferenceRequest: Encodable {
+    let referenceId: String
+    let artifactId: String?
+    let preferenceToken: String?
+}

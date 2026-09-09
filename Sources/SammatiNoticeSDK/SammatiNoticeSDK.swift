@@ -1,13 +1,21 @@
 import Foundation
 import UIKit
 
-public enum SammatiEnvironment {
+public enum SammatiEnvironment: Sendable {
     case sandbox
     case production
+
+    internal var defaultBaseURL: URL {
+        switch self {
+        case .sandbox:
+            return URL(string: "https://samatigridapidev.rysun.in")!
+        case .production:
+            return URL(string: "https://samatigridapi.rysun.in")!
+        }
+    }
 }
 
 public struct SammatiConfiguration {
-    internal static let defaultAPIBaseURL = URL(string: "https://samatigridapidev.rysun.in")!
     public static let defaultEnvironment: SammatiEnvironment = .sandbox
 
     public let clientId: String
@@ -27,7 +35,7 @@ public struct SammatiConfiguration {
         self.origin = origin.trimmingCharacters(in: .whitespacesAndNewlines)
         self.environment = environment
         self.theme = theme
-        self.apiBaseURL = SammatiConfiguration.defaultAPIBaseURL
+        self.apiBaseURL = environment.defaultBaseURL
     }
 
     internal init(

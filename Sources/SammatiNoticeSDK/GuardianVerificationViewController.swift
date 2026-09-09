@@ -85,7 +85,7 @@ final class GuardianVerificationViewController: UIViewController, WKNavigationDe
           });
         })();
         """
-        content.addUserScript(WKUserScript(source: script, injectionTime: .atDocumentStart, forMainFrameOnly: false))
+        content.addUserScript(WKUserScript(source: script, injectionTime: .atDocumentStart, forMainFrameOnly: true))
         content.add(self, name: "sammatiGuardian")
 
         let config = WKWebViewConfiguration()
@@ -116,7 +116,9 @@ final class GuardianVerificationViewController: UIViewController, WKNavigationDe
             return
         }
 
-        webView.load(URLRequest(url: url))
+        var request = URLRequest(url: url)
+        request.setValue(sessionToken, forHTTPHeaderField: "X-Guardian-Session")
+        webView.load(request)
         NSLayoutConstraint.activate([
             webView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
             webView.leadingAnchor.constraint(equalTo: view.leadingAnchor),

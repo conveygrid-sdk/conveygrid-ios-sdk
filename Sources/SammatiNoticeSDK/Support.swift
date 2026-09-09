@@ -5,6 +5,7 @@ import Security
 
 enum KeychainStore {
     private static let service = "in.sammati.sdk.secure"
+    private static let lock = NSLock()
     private static var memoryFallback: [String: Data] = [:]
 
     @discardableResult
@@ -15,11 +16,13 @@ enum KeychainStore {
             kSecAttrService as String: service,
             kSecAttrAccount as String: key,
             kSecValueData as String: data,
-            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlock
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
         ]
         let status = SecItemAdd(query as CFDictionary, nil)
         if status != errSecSuccess {
+            lock.lock()
             memoryFallback[key] = data
+            lock.unlock()
             return true
         }
         return true
@@ -44,6 +47,8 @@ enum KeychainStore {
         if status == errSecSuccess, let data = result as? Data {
             return data
         }
+        lock.lock()
+        defer { lock.unlock() }
         return memoryFallback[key]
     }
 
@@ -53,7 +58,9 @@ enum KeychainStore {
     }
 
     static func delete(forKey key: String) {
+        lock.lock()
         memoryFallback.removeValue(forKey: key)
+        lock.unlock()
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
