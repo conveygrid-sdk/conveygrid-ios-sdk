@@ -32,7 +32,7 @@ final class SammatiNoticeSDKTests: XCTestCase {
         )
         XCTAssertEqual(configuration.clientId, "my_app_client_id")
         XCTAssertEqual(configuration.origin, "https://my-app.com")
-        XCTAssertEqual(configuration.apiBaseURL, URL(string: "https://samatigridapidev.rysun.in")!)
+        XCTAssertEqual(configuration.apiBaseURL, URL(string: "https://conveygridapidev.rysun.in")!)
         XCTAssertEqual(configuration.environment, .sandbox)
         XCTAssertNil(configuration.theme)
     }

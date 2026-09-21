@@ -21,9 +21,9 @@ final class DemoViewController: UIViewController {
                     let result = try await SammatiNotice.captureConsent(
                         options: ConsentOptions(
                             noticeCode: "NOTICE_CODE",
-                            fullName: "Demo User",
-                            email: "demo@example.com",
-                            mobile: "9999999999"
+                            fullName: "<FULL_NAME>",
+                            email: "<EMAIL>",
+                            mobile: "<MOBILE>"
                         ),
                         presenter: self
                     )

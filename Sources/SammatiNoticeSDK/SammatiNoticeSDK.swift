@@ -8,7 +8,7 @@ public enum SammatiEnvironment: Sendable {
     internal var defaultBaseURL: URL {
         switch self {
         case .sandbox:
-            return URL(string: "https://samatigridapidev.rysun.in")!
+            return URL(string: "https://conveygridapidev.rysun.in")!
         case .production:
             return URL(string: "https://samatigridapi.rysun.in")!
         }

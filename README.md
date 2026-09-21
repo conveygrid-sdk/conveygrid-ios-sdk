@@ -132,9 +132,9 @@ The SDK automatically decodes and applies server-driven themes:
 let result = try await SammatiNotice.captureConsent(
     options: ConsentOptions(
         noticeCode: "LUXE",
-        email: "user@example.com",
-        mobile: "9999999999",
-        fullName: "Jane Doe"
+        email: "<EMAIL>",
+        mobile: "<MOBILE>",
+        fullName: "<FULL_NAME>"
     ),
     presenter: self
 )
@@ -150,13 +150,13 @@ if result.allMandatoryGranted {
 let result = try await SammatiNotice.captureConsent(
     options: ConsentOptions(
         noticeCode: "LUXE",
-        fullName: "Alex Smith",
-        dateOfBirth: "2015-05-10",
+        fullName: "<FULL_NAME>",
+        dateOfBirth: "<DATE_OF_BIRTH>",
         guardian: Guardian(
-            guardianName: "Robert Smith",
-            guardianEmail: "guardian@example.com",
-            guardianMobile: "8888888888",
-            relationshipCode: "FATHER"
+            guardianName: "<GUARDIAN_NAME>",
+            guardianEmail: "<GUARDIAN_EMAIL>",
+            guardianMobile: "<GUARDIAN_MOBILE>",
+            relationshipCode: "<RELATIONSHIP_CODE>"
         )
     ),
     presenter: self
