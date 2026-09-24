@@ -23,11 +23,11 @@ final class APIClient {
             .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    private func request<T: Decodable>(
+    private func requestRawData(
         path: String,
         method: String = "GET",
         body: Data? = nil
-    ) async throws -> T {
+    ) async throws -> Data {
         let normalizedPath = path.hasPrefix("/api/v1") ? path : "/api/v1\(path)"
         let base = configuration.apiBaseURL.absoluteString.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         guard let url = URL(string: "\(base)\(normalizedPath)") else {
@@ -55,13 +55,42 @@ final class APIClient {
             request.setValue("\(cleanOrigin)/", forHTTPHeaderField: "Referer")
         }
 
-        let (data, response) = try await session.data(for: request)
+        // Detailed request logging
+        SammatiLogger.logRequest(
+            url: url,
+            method: method,
+            headers: request.allHTTPHeaderFields ?? [:],
+            body: body
+        )
+
+        let startTime = CFAbsoluteTimeGetCurrent()
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await session.data(for: request)
+        } catch {
+            let durationMs = (CFAbsoluteTimeGetCurrent() - startTime) * 1000.0
+            SammatiLogger.error("❌ Network request failed: [\(method)] \(url.absoluteString) after \(String(format: "%.1f", durationMs)) ms with error: \(error.localizedDescription)")
+            throw error
+        }
+        let durationMs = (CFAbsoluteTimeGetCurrent() - startTime) * 1000.0
+
         guard let http = response as? HTTPURLResponse else {
+            SammatiLogger.error("❌ Non-HTTP response received from \(url.absoluteString)")
             throw SammatiSDKError.invalidResponse
         }
 
-        let envelope = try? decoder.decode(APIEnvelope<T>.self, from: data)
+        // Detailed response logging
+        SammatiLogger.logResponse(
+            url: url,
+            method: method,
+            statusCode: http.statusCode,
+            data: data,
+            durationMs: durationMs
+        )
+
         if !(200..<300).contains(http.statusCode) {
+            let envelope = try? decoder.decode(APIEnvelope<EmptyResponse>.self, from: data)
             let errorDetails = envelope?.errors?.compactMap { item -> String? in
                 if let field = item.field, let msg = item.message {
                     return "\(field): \(msg)"
@@ -75,11 +104,37 @@ final class APIClient {
             } else {
                 errMsg = envelope?.message ?? HTTPURLResponse.localizedString(forStatusCode: http.statusCode)
             }
+            SammatiLogger.error("❌ API Error (HTTP \(http.statusCode)): \(errMsg)")
             throw SammatiSDKError.serverError(errMsg)
         }
 
-        if let envelope, let payload = envelope.data {
-            return payload
+        return data
+    }
+
+    private func request<T: Decodable>(
+        path: String,
+        method: String = "GET",
+        body: Data? = nil
+    ) async throws -> T {
+        let data = try await requestRawData(path: path, method: method, body: body)
+        let envelope = try? decoder.decode(APIEnvelope<T>.self, from: data)
+        if let envelope {
+            if var notice = envelope.data as? Notice {
+                let resolvedShow = envelope.showNotice ?? notice.showNotice
+                let resolvedMsg = envelope.message ?? notice.message
+                notice = notice.withShowNotice(resolvedShow, message: resolvedMsg)
+                if let typed = notice as? T {
+                    return typed
+                }
+            } else if T.self == Notice.self {
+                let emptyNotice = Notice().withShowNotice(envelope.showNotice, message: envelope.message)
+                if let typed = emptyNotice as? T {
+                    return typed
+                }
+            }
+            if let payload = envelope.data {
+                return payload
+            }
         }
         if let direct = try? decoder.decode(T.self, from: data) {
             return direct
@@ -87,38 +142,91 @@ final class APIClient {
         throw SammatiSDKError.invalidResponse
     }
 
-    func fetchPublishedNotice(noticeCode: String, mobile: String? = nil) async throws -> Notice {
-        let safeChars = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_.~"))
-        let safeNoticeCode = noticeCode.addingPercentEncoding(withAllowedCharacters: safeChars) ?? noticeCode
-        let path = "/api/v1/public/consent/notices/\(safeNoticeCode)/published"
-        if let mobile, !mobile.isEmpty {
-            let encodedMobile = mobile.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? mobile
-            let mobileNotice: Notice = try await request(path: "\(path)?mobile=\(encodedMobile)")
-            if mobileNotice.showNotice == false {
-                let baseNotice: Notice = try await request(path: path)
-                let show = mobileNotice.showNotice ?? baseNotice.showNotice
-                if show == false {
-                    return Notice(
-                        noticeId: baseNotice.noticeId,
-                        noticeCode: baseNotice.noticeCode,
-                        version: baseNotice.version,
-                        noticeName: baseNotice.noticeName,
-                        introductionText: baseNotice.introductionText,
-                        footerText: baseNotice.footerText,
-                        rightsText: baseNotice.rightsText,
-                        contactInformation: baseNotice.contactInformation,
-                        showNotice: mobileNotice.showNotice,
-                        supportsMinors: baseNotice.supportsMinors,
-                        guardianVerificationMode: baseNotice.guardianVerificationMode,
-                        theme: baseNotice.theme,
-                        message: mobileNotice.message,
-                        purposes: baseNotice.purposes
-                    )
+    func parsePublishedNotice(from data: Data) throws -> Notice {
+        let rawJson = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+        let showKeys = [
+            "show_notice", "showNotice", "shownotice", "show_Notice",
+            "is_show_notice", "isShowNotice", "is_notice_required",
+            "notice_required", "show", "show_ui"
+        ]
+
+        func extractBool(from dict: [String: Any]?) -> Bool? {
+            guard let dict else { return nil }
+            for key in showKeys {
+                if let val = dict[key] {
+                    if let b = val as? Bool { return b }
+                    if let s = val as? String {
+                        let trimmed = s.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                        if trimmed == "false" || trimmed == "0" || trimmed == "no" { return false }
+                        if trimmed == "true" || trimmed == "1" || trimmed == "yes" { return true }
+                    }
+                    if let num = val as? NSNumber {
+                        return num.boolValue
+                    }
                 }
             }
-            return mobileNotice
+            return nil
         }
-        return try await request(path: path)
+
+        var rawShowNotice = extractBool(from: rawJson)
+        let dataDict = rawJson?["data"] as? [String: Any]
+        if rawShowNotice == nil {
+            rawShowNotice = extractBool(from: dataDict)
+        }
+
+        let envelope = try? decoder.decode(APIEnvelope<Notice>.self, from: data)
+        var notice = envelope?.data ?? (try? decoder.decode(Notice.self, from: data)) ?? Notice()
+
+        let resolvedShow = rawShowNotice ?? envelope?.showNotice ?? notice.showNotice
+        let resolvedMessage = envelope?.message ?? notice.message
+
+        SammatiLogger.debug("📋 Parsed Published Notice: noticeCode=\(notice.noticeCode ?? "nil"), showNotice=\(String(describing: resolvedShow)) (raw=\(String(describing: rawShowNotice)), envelope=\(String(describing: envelope?.showNotice))), purposes=\(notice.purposes.count), message=\(resolvedMessage ?? "nil")")
+
+        return notice.withShowNotice(resolvedShow, message: resolvedMessage)
+    }
+
+    func fetchPublishedNotice(
+        noticeCode: String,
+        identity: ConsentIdentity? = nil,
+        mobile: String? = nil
+    ) async throws -> Notice {
+        let safeChars = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-_.~"))
+        let safeNoticeCode = noticeCode.addingPercentEncoding(withAllowedCharacters: safeChars) ?? noticeCode
+        let basePath = "/api/v1/public/consent/notices/\(safeNoticeCode)/published"
+
+        var queryItems: [URLQueryItem] = []
+        let rawMobile = (identity?.mobile ?? mobile)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let rawMobile, !rawMobile.isEmpty {
+            let digitsOnly = rawMobile.filter(\.isNumber)
+            let mobileToSend = !digitsOnly.isEmpty ? digitsOnly : rawMobile
+            queryItems.append(URLQueryItem(name: "mobile", value: mobileToSend))
+        }
+        if let email = identity?.email?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(), !email.isEmpty {
+            queryItems.append(URLQueryItem(name: "email", value: email))
+        }
+        if let ref = identity?.referenceId?.trimmingCharacters(in: .whitespacesAndNewlines), !ref.isEmpty {
+            queryItems.append(URLQueryItem(name: "reference_id", value: ref))
+        }
+        if let sub = identity?.subjectRef?.trimmingCharacters(in: .whitespacesAndNewlines), !sub.isEmpty {
+            queryItems.append(URLQueryItem(name: "subject_ref", value: sub))
+        }
+        let sess = identity?.sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let sess, !sess.isEmpty {
+            queryItems.append(URLQueryItem(name: "session_id", value: sess))
+        }
+
+        let fullPath: String
+        if !queryItems.isEmpty {
+            var components = URLComponents()
+            components.queryItems = queryItems
+            let queryString = components.percentEncodedQuery ?? ""
+            fullPath = queryString.isEmpty ? basePath : "\(basePath)?\(queryString)"
+        } else {
+            fullPath = basePath
+        }
+
+        let data = try await requestRawData(path: fullPath)
+        return try parsePublishedNotice(from: data)
     }
 
     func validate(identity: ConsentIdentity, purposeCode: String, noticeCode: String?) async throws -> ConsentValidation {
@@ -126,7 +234,10 @@ final class APIClient {
             purposeCode: purposeCode,
             noticeCode: noticeCode,
             referenceId: identity.referenceId,
-            sessionId: identity.sessionId
+            sessionId: identity.sessionId,
+            email: identity.email,
+            mobile: identity.mobile,
+            subjectRef: identity.subjectRef
         )
         let data = try encoder.encode(req)
         return try await request(path: "/api/v1/public/consent/validate", method: "POST", body: data)
@@ -223,12 +334,36 @@ struct ValidateRequest: Encodable {
     let noticeCode: String?
     let referenceId: String?
     let sessionId: String
+    let email: String?
+    let mobile: String?
+    let subjectRef: String?
+
+    init(
+        purposeCode: String,
+        noticeCode: String? = nil,
+        referenceId: String? = nil,
+        sessionId: String,
+        email: String? = nil,
+        mobile: String? = nil,
+        subjectRef: String? = nil
+    ) {
+        self.purposeCode = purposeCode
+        self.noticeCode = noticeCode
+        self.referenceId = referenceId
+        self.sessionId = sessionId
+        self.email = email
+        self.mobile = mobile
+        self.subjectRef = subjectRef
+    }
 
     enum CodingKeys: String, CodingKey {
         case purposeCode = "purpose_code"
         case noticeCode = "notice_code"
         case referenceId = "reference_id"
         case sessionId = "session_id"
+        case email
+        case mobile
+        case subjectRef = "subject_ref"
     }
 }
 

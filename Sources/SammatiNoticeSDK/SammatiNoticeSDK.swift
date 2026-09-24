@@ -22,6 +22,7 @@ public struct SammatiConfiguration {
     public let origin: String
     public let environment: SammatiEnvironment
     public let theme: NoticeTheme?
+    public let debugMode: Bool
 
     internal let apiBaseURL: URL
 
@@ -29,12 +30,20 @@ public struct SammatiConfiguration {
         clientId: String,
         origin: String,
         environment: SammatiEnvironment = SammatiConfiguration.defaultEnvironment,
-        theme: NoticeTheme? = nil
+        theme: NoticeTheme? = nil,
+        debugMode: Bool = {
+            #if DEBUG
+            return true
+            #else
+            return false
+            #endif
+        }()
     ) {
         self.clientId = clientId.trimmingCharacters(in: .whitespacesAndNewlines)
         self.origin = origin.trimmingCharacters(in: .whitespacesAndNewlines)
         self.environment = environment
         self.theme = theme
+        self.debugMode = debugMode
         self.apiBaseURL = environment.defaultBaseURL
     }
 
@@ -43,13 +52,21 @@ public struct SammatiConfiguration {
         origin: String,
         apiBaseURL: URL,
         environment: SammatiEnvironment = SammatiConfiguration.defaultEnvironment,
-        theme: NoticeTheme? = nil
+        theme: NoticeTheme? = nil,
+        debugMode: Bool = {
+            #if DEBUG
+            return true
+            #else
+            return false
+            #endif
+        }()
     ) {
         self.clientId = clientId.trimmingCharacters(in: .whitespacesAndNewlines)
         self.origin = origin.trimmingCharacters(in: .whitespacesAndNewlines)
         self.apiBaseURL = apiBaseURL
         self.environment = environment
         self.theme = theme
+        self.debugMode = debugMode
     }
 }
 
@@ -282,22 +299,45 @@ public final class SammatiNotice {
 
     public static func configure(_ configuration: SammatiConfiguration) {
         shared.configuration = configuration
+        SammatiLogger.isDebugEnabled = configuration.debugMode || SammatiLogger.isDebugEnabled
+        SammatiLogger.debug("Configured SammatiNoticeSDK (clientId: \(configuration.clientId), origin: \(configuration.origin), env: \(configuration.environment), debugMode: \(SammatiLogger.isDebugEnabled))")
     }
 
     public static func configure(
         clientId: String,
         origin: String,
         environment: SammatiEnvironment = SammatiConfiguration.defaultEnvironment,
-        theme: NoticeTheme? = nil
+        theme: NoticeTheme? = nil,
+        debugMode: Bool = {
+            #if DEBUG
+            return true
+            #else
+            return false
+            #endif
+        }()
     ) {
         configure(
             SammatiConfiguration(
                 clientId: clientId,
                 origin: origin,
                 environment: environment,
-                theme: theme
+                theme: theme,
+                debugMode: debugMode
             )
         )
+    }
+
+    /// Enables or disables verbose debug logging to the console (including HTTP requests and responses).
+    public static func enableDebugLogging(_ enabled: Bool = true) {
+        SammatiLogger.isDebugEnabled = enabled
+        SammatiLogger.info("Debug logging is \(enabled ? "ENABLED" : "DISABLED").")
+    }
+
+    /// Clears any cached consent statuses and pending links stored on device.
+    public static func clearConsentCache() {
+        GrantedConsentStore.clear()
+        PendingLinkStore.clear()
+        SammatiLogger.info("Cleared local consent cache.")
     }
 
     public static func getSessionId() -> String {
@@ -378,6 +418,11 @@ public final class SammatiNotice {
             language: LanguageStore.normalize(options.language ?? LanguageStore.current)
         )
 
+        let emailDisplay = identity.email ?? ""
+        let mobileDisplay = identity.mobile ?? ""
+        let nameDisplay = identity.fullName ?? ""
+        SammatiLogger.debug("🚀 captureConsent started for noticeCode: \(options.noticeCode), email: \(emailDisplay), mobile: \(mobileDisplay), fullName: \(nameDisplay)")
+
         if isMinor {
             return try await MinorConsentFlow(api: APIClient(configuration: config))
                 .run(noticeCode: options.noticeCode, identity: identity, presenter: presenter)
@@ -394,6 +439,7 @@ public final class SammatiNotice {
                     if !v.allowed { break }
                 }
                 if validations.allSatisfy({ $0.allowed }) {
+                    GrantedConsentStore.record(noticeCode: options.noticeCode, identity: identity)
                     return ConsentResult(
                         allMandatoryGranted: true,
                         status: "valid",
@@ -406,8 +452,17 @@ public final class SammatiNotice {
         }
 
         let api = APIClient(configuration: config)
-        let notice = try await api.fetchPublishedNotice(noticeCode: options.noticeCode, mobile: identity.mobile)
-        if !options.forceDisplay && notice.showNotice == false {
+        let notice = try await api.fetchPublishedNotice(noticeCode: options.noticeCode, identity: identity, mobile: identity.mobile)
+
+        let allMandatoryGranted = !notice.purposes.isEmpty && notice.purposes.filter { $0.mandatory }.allSatisfy { $0.granted }
+        let allPurposesGranted = !notice.purposes.isEmpty && notice.purposes.allSatisfy { $0.granted }
+        let isAlreadyGrantedOnNotice = notice.showNotice == false || allMandatoryGranted || allPurposesGranted
+
+        SammatiLogger.info("📊 Consent Evaluation: showNotice=\(notice.showNotice ?? true), purposesCount=\(notice.purposes.count), allMandatoryGranted=\(allMandatoryGranted), allPurposesGranted=\(allPurposesGranted), isAlreadyGrantedOnNotice=\(isAlreadyGrantedOnNotice)")
+
+        if !options.forceDisplay && isAlreadyGrantedOnNotice {
+            GrantedConsentStore.record(noticeCode: options.noticeCode, identity: identity)
+            SammatiLogger.info("⚡ Notice indicates consent already granted (showNotice=\(notice.showNotice ?? true)). Recorded in GrantedConsentStore. Skipping UI.")
             return ConsentResult(
                 allMandatoryGranted: true,
                 status: "valid",
@@ -426,11 +481,24 @@ public final class SammatiNotice {
         let withNotice = notice.theme?.merged(with: withConfig) ?? withConfig
         let activeTheme = options.theme?.merged(with: withNotice) ?? withNotice
 
+        SammatiLogger.info("📱 Presenting Consent UI modal for noticeCode: \(notice.noticeCode ?? options.noticeCode)")
         let selection = try await ConsentViewController.present(notice: notice, theme: activeTheme, presenter: presenter)
-        if selection.cancelled { throw SammatiSDKError.cancelled }
+        if selection.cancelled {
+            SammatiLogger.warn("User cancelled / dismissed consent notice.")
+            throw SammatiSDKError.cancelled
+        }
 
+        SammatiLogger.debug("Submitting user consent choices (\(selection.choices.count) choices)...")
         let result = try await api.submit(notice: notice, choices: selection.choices, identity: identity, language: selection.language)
         let mapped = api.mapResult(result)
+
+        if mapped.allMandatoryGranted {
+            GrantedConsentStore.record(noticeCode: options.noticeCode, identity: identity)
+            SammatiLogger.info("Recorded granted consent in GrantedConsentStore.")
+        }
+        let statusDisplay = mapped.status ?? "unknown"
+        let artifactDisplay = mapped.artifactId ?? "none"
+        SammatiLogger.info("✅ Consent capture completed: status=\(statusDisplay), allMandatoryGranted=\(mapped.allMandatoryGranted), artifactId=\(artifactDisplay)")
 
         if mapped.linkRequired {
             PendingLinkStore.save(result: mapped)

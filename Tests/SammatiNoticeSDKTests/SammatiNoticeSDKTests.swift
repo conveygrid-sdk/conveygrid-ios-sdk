@@ -206,7 +206,7 @@ final class SammatiNoticeSDKTests: XCTestCase {
             pageUrl: "https://example.com",
             subject: SubmitSubject(sessionId: "s1", referenceId: nil, email: nil, mobile: nil, fullName: nil),
             subjectRef: nil,
-            dataPrincipal: SubmitDataPrincipal(dateOfBirth: nil, fullName: nil, email: nil, mobile: nil, preferredLanguage: "en"),
+            dataPrincipal: nil,
             guardian: nil
         )
         let submitData = try JSONEncoder().encode(submitReq)
@@ -247,6 +247,294 @@ final class SammatiNoticeSDKTests: XCTestCase {
         } catch {
             XCTFail("Unexpected error: \(error)")
         }
+    }
+
+    func testFlexibleBoolDecodingForNoticeAndPurpose() throws {
+        // Test 1: snake_case boolean values
+        let json1 = """
+        {
+            "notice_id": "n1",
+            "notice_code": "NOTICE_1",
+            "show_notice": false,
+            "purposes": [
+                {
+                    "purpose_id": "p1",
+                    "purpose_code": "EMAIL_MARKETING",
+                    "is_mandatory": true,
+                    "already_granted": true
+                }
+            ]
+        }
+        """.data(using: .utf8)!
+
+        let notice1 = try JSONDecoder().decode(Notice.self, from: json1)
+        XCTAssertEqual(notice1.showNotice, false)
+        XCTAssertEqual(notice1.purposes.count, 1)
+        XCTAssertEqual(notice1.purposes[0].mandatory, true)
+        XCTAssertEqual(notice1.purposes[0].granted, true)
+
+        // Test 2: camelCase strings and integers ("false", "1", "true")
+        let json2 = """
+        {
+            "noticeId": "n2",
+            "noticeCode": "NOTICE_2",
+            "showNotice": "false",
+            "purposes": [
+                {
+                    "purposeId": "p2",
+                    "purposeCode": "SMS_MARKETING",
+                    "isMandatory": "1",
+                    "is_granted": "true"
+                },
+                {
+                    "purposeId": "p3",
+                    "purposeCode": "ANALYTICS",
+                    "is_mandatory": 0,
+                    "granted": 1
+                }
+            ]
+        }
+        """.data(using: .utf8)!
+
+        let notice2 = try JSONDecoder().decode(Notice.self, from: json2)
+        XCTAssertEqual(notice2.showNotice, false)
+        XCTAssertEqual(notice2.purposes.count, 2)
+        XCTAssertEqual(notice2.purposes[0].mandatory, true)
+        XCTAssertEqual(notice2.purposes[0].granted, true)
+        XCTAssertEqual(notice2.purposes[1].mandatory, false)
+        XCTAssertEqual(notice2.purposes[1].granted, true)
+    }
+
+    func testGrantedConsentStoreOperations() {
+        GrantedConsentStore.clear()
+        let identity = ConsentIdentity(
+            sessionId: "session_123",
+            referenceId: "user_ref_456",
+            email: "alice@example.com",
+            mobile: "+91 98765 43210"
+        )
+
+        XCTAssertFalse(GrantedConsentStore.isGranted(noticeCode: "TEST_NOTICE", identity: identity))
+
+        GrantedConsentStore.record(noticeCode: "TEST_NOTICE", identity: identity)
+
+        // Same notice + same email
+        let queryByEmail = ConsentIdentity(sessionId: "new_session", email: "alice@example.com")
+        XCTAssertTrue(GrantedConsentStore.isGranted(noticeCode: "TEST_NOTICE", identity: queryByEmail))
+
+        // Same notice + same mobile (filtered numbers)
+        let queryByMobile = ConsentIdentity(sessionId: "new_session_2", mobile: "9876543210")
+        XCTAssertTrue(GrantedConsentStore.isGranted(noticeCode: "TEST_NOTICE", identity: queryByMobile))
+
+        // Same notice + same referenceId
+        let queryByRef = ConsentIdentity(sessionId: "new_session_3", referenceId: "user_ref_456")
+        XCTAssertTrue(GrantedConsentStore.isGranted(noticeCode: "TEST_NOTICE", identity: queryByRef))
+
+        // Different notice code
+        XCTAssertFalse(GrantedConsentStore.isGranted(noticeCode: "OTHER_NOTICE", identity: identity))
+
+        // Different user
+        let otherUser = ConsentIdentity(sessionId: "other_session", email: "bob@example.com")
+        XCTAssertFalse(GrantedConsentStore.isGranted(noticeCode: "TEST_NOTICE", identity: otherUser))
+
+        // Clear works
+        GrantedConsentStore.clear()
+        XCTAssertFalse(GrantedConsentStore.isGranted(noticeCode: "TEST_NOTICE", identity: identity))
+    }
+
+    func testClearConsentCache() {
+        let identity = ConsentIdentity(sessionId: "s_test", email: "consent_user@example.com")
+        GrantedConsentStore.record(noticeCode: "ONBOARDING", identity: identity)
+        XCTAssertTrue(GrantedConsentStore.isGranted(noticeCode: "ONBOARDING", identity: identity))
+
+        SammatiNotice.clearConsentCache()
+        XCTAssertFalse(GrantedConsentStore.isGranted(noticeCode: "ONBOARDING", identity: identity))
+    }
+
+    @MainActor
+    func testConsentViewControllerPresentSkipsWhenNoticeShowNoticeIsFalse() async throws {
+        let dummyVC = UIViewController()
+        let notice = Notice(
+            noticeId: "n_test",
+            noticeCode: "TEST",
+            showNotice: false,
+            purposes: [
+                Purpose(purposeId: "p1", purposeCode: "P1", isMandatory: true, alreadyGranted: false)
+            ]
+        )
+
+        let selection = try await ConsentViewController.present(notice: notice, presenter: dummyVC)
+        XCTAssertFalse(selection.cancelled)
+        XCTAssertEqual(selection.choices.count, 1)
+        XCTAssertEqual(selection.choices[0].purposeId, "p1")
+        XCTAssertEqual(selection.choices[0].granted, false)
+    }
+
+    @MainActor
+    func testConsentViewControllerPresentSkipsWhenAllPurposesAlreadyGranted() async throws {
+        let dummyVC = UIViewController()
+        let notice = Notice(
+            noticeId: "n_test_2",
+            noticeCode: "TEST_2",
+            showNotice: true,
+            purposes: [
+                Purpose(purposeId: "p1", purposeCode: "P1", isMandatory: true, alreadyGranted: true),
+                Purpose(purposeId: "p2", purposeCode: "P2", isMandatory: false, alreadyGranted: true)
+            ]
+        )
+
+        let selection = try await ConsentViewController.present(notice: notice, presenter: dummyVC)
+        XCTAssertFalse(selection.cancelled)
+        XCTAssertEqual(selection.choices.count, 2)
+        XCTAssertTrue(selection.choices[0].granted)
+        XCTAssertTrue(selection.choices[1].granted)
+    }
+
+    func testParsePublishedNoticeWithEnvelopeLevelShowNoticeFalse() throws {
+        let json = """
+        {
+            "success": true,
+            "message": "Notice fetched successfully",
+            "show_notice": false,
+            "data": {
+                "notice_id": "nid_1",
+                "notice_code": "NOTICE_1",
+                "version": "1.0",
+                "notice_name": "Terms of Service",
+                "purposes": [
+                    {
+                        "purpose_id": "p1",
+                        "purpose_code": "MARKETING",
+                        "is_mandatory": true,
+                        "already_granted": false
+                    }
+                ]
+            }
+        }
+        """.data(using: .utf8)!
+
+        let client = APIClient(configuration: SammatiConfiguration(clientId: "client", origin: "https://example.com"))
+        let notice = try client.parsePublishedNotice(from: json)
+
+        XCTAssertEqual(notice.showNotice, false)
+        XCTAssertEqual(notice.noticeId, "nid_1")
+        XCTAssertEqual(notice.noticeCode, "NOTICE_1")
+        XCTAssertEqual(notice.message, "Notice fetched successfully")
+    }
+
+    func testParsePublishedNoticeWithShownoticeLowercased() throws {
+        let json = """
+        {
+            "success": true,
+            "shownotice": false,
+            "message": "Consent already provided",
+            "data": {
+                "notice_id": "nid_2",
+                "notice_code": "NOTICE_2"
+            }
+        }
+        """.data(using: .utf8)!
+
+        let client = APIClient(configuration: SammatiConfiguration(clientId: "client", origin: "https://example.com"))
+        let notice = try client.parsePublishedNotice(from: json)
+
+        XCTAssertEqual(notice.showNotice, false)
+        XCTAssertEqual(notice.noticeId, "nid_2")
+    }
+
+    func testParsePublishedNoticeWithShownoticeStringAndNumber() throws {
+        let jsonString = """
+        {
+            "success": true,
+            "show_notice": "false",
+            "data": {
+                "notice_code": "NOTICE_3"
+            }
+        }
+        """.data(using: .utf8)!
+
+        let jsonZero = """
+        {
+            "success": true,
+            "shownotice": 0,
+            "data": {
+                "notice_code": "NOTICE_4"
+            }
+        }
+        """.data(using: .utf8)!
+
+        let client = APIClient(configuration: SammatiConfiguration(clientId: "client", origin: "https://example.com"))
+        let notice1 = try client.parsePublishedNotice(from: jsonString)
+        let notice2 = try client.parsePublishedNotice(from: jsonZero)
+
+        XCTAssertEqual(notice1.showNotice, false)
+        XCTAssertEqual(notice2.showNotice, false)
+    }
+
+    func testParsePublishedNoticeWithNoDataObject() throws {
+        let json = """
+        {
+            "success": true,
+            "show_notice": false,
+            "message": "Consent has already been provided for all requested purposes."
+        }
+        """.data(using: .utf8)!
+
+        let client = APIClient(configuration: SammatiConfiguration(clientId: "client", origin: "https://example.com"))
+        let notice = try client.parsePublishedNotice(from: json)
+
+        XCTAssertEqual(notice.showNotice, false)
+        XCTAssertEqual(notice.message, "Consent has already been provided for all requested purposes.")
+    }
+
+    @MainActor
+    func testConsentViewControllerDirectViewDidLoadSkipsWhenShowNoticeIsFalse() {
+        var completedSelection: ConsentViewController.Selection?
+        let notice = Notice(noticeId: "test_n", showNotice: false)
+        let vc = ConsentViewController(notice: notice) { sel in
+            completedSelection = sel
+        }
+
+        _ = vc.view // Triggers viewDidLoad()
+
+        XCTAssertNotNil(completedSelection)
+        XCTAssertFalse(completedSelection!.cancelled)
+    }
+
+    func testDebugLoggingToggle() {
+        let initial = SammatiLogger.isDebugEnabled
+        defer { SammatiLogger.isDebugEnabled = initial }
+
+        SammatiNotice.enableDebugLogging(false)
+        XCTAssertFalse(SammatiLogger.isDebugEnabled)
+
+        SammatiNotice.enableDebugLogging(true)
+        XCTAssertTrue(SammatiLogger.isDebugEnabled)
+    }
+
+    func testLoggerPrettyPrintAndFormattedLogging() {
+        let jsonStr = "{\"show_notice\":false,\"notice_code\":\"TEST_01\",\"count\":42}"
+        let data = jsonStr.data(using: .utf8)!
+        let pretty = SammatiLogger.prettyJsonString(from: data)
+        XCTAssertTrue(pretty.contains("\n"))
+        XCTAssertTrue(pretty.contains("\"show_notice\" : false") || pretty.contains("\"show_notice\": false"))
+
+        // Ensure logRequest and logResponse execute without crash
+        let url = URL(string: "https://conveygridapidev.rysun.in/api/v1/public/consent/notices/TEST_01/published?email=user%40example.com")!
+        SammatiLogger.logRequest(
+            url: url,
+            method: "GET",
+            headers: ["X-Application-Key": "my-secret-key-12345", "Origin": "https://example.com"],
+            body: nil
+        )
+
+        SammatiLogger.logResponse(
+            url: url,
+            method: "GET",
+            statusCode: 200,
+            data: data,
+            durationMs: 145.2
+        )
     }
 }
 

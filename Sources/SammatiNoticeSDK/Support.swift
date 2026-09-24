@@ -200,6 +200,100 @@ enum PendingLinkStore {
     }
 }
 
+enum GrantedConsentStore {
+    private static let lock = NSLock()
+    private static let storageKey = "sammati_granted_consents"
+    private static var inMemoryCache: Set<String>?
+
+    private static var grantedNotices: Set<String> {
+        get {
+            if let inMemoryCache {
+                return inMemoryCache
+            }
+            let loaded = Set(UserDefaults.standard.stringArray(forKey: storageKey) ?? [])
+            inMemoryCache = loaded
+            return loaded
+        }
+        set {
+            inMemoryCache = newValue
+            UserDefaults.standard.set(Array(newValue), forKey: storageKey)
+        }
+    }
+
+    private static func candidateKeys(noticeCode: String, identity: ConsentIdentity) -> [String] {
+        var keys: [String] = []
+        let n = noticeCode.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if let email = identity.email?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(), !email.isEmpty {
+            keys.append("\(n):email:\(email)")
+        }
+        let mob = (identity.mobile ?? "").filter(\.isNumber)
+        if !mob.isEmpty {
+            keys.append("\(n):mobile:\(mob)")
+            if mob.count > 10 {
+                keys.append("\(n):mobile:\(String(mob.suffix(10)))")
+            }
+        }
+        if let ref = identity.referenceId?.trimmingCharacters(in: .whitespacesAndNewlines), !ref.isEmpty {
+            keys.append("\(n):ref:\(ref.lowercased())")
+        }
+        if let sub = identity.subjectRef?.trimmingCharacters(in: .whitespacesAndNewlines), !sub.isEmpty {
+            keys.append("\(n):sub:\(sub.lowercased())")
+        }
+        let sess = identity.sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !sess.isEmpty {
+            keys.append("\(n):session:\(sess.lowercased())")
+        }
+        return keys
+    }
+
+    static func record(noticeCode: String, identity: ConsentIdentity) {
+        lock.lock()
+        defer { lock.unlock() }
+        var current = grantedNotices
+        for key in candidateKeys(noticeCode: noticeCode, identity: identity) {
+            current.insert(key)
+        }
+        grantedNotices = current
+    }
+
+    static func isGranted(noticeCode: String, identity: ConsentIdentity) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        let current = grantedNotices
+        for key in candidateKeys(noticeCode: noticeCode, identity: identity) {
+            if current.contains(key) {
+                return true
+            }
+        }
+        return false
+    }
+
+    static func clear() {
+        lock.lock()
+        defer { lock.unlock() }
+        grantedNotices = []
+    }
+}
+
+extension KeyedDecodingContainer {
+    func decodeFlexibleBool(forKeys keys: [K]) -> Bool? {
+        for key in keys {
+            if let val = try? decodeIfPresent(Bool.self, forKey: key) {
+                return val
+            }
+            if let str = try? decodeIfPresent(String.self, forKey: key) {
+                let trimmed = str.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                if trimmed == "true" || trimmed == "1" || trimmed == "yes" { return true }
+                if trimmed == "false" || trimmed == "0" || trimmed == "no" { return false }
+            }
+            if let intVal = try? decodeIfPresent(Int.self, forKey: key) {
+                return intVal != 0
+            }
+        }
+        return nil
+    }
+}
+
 extension UIColor {
     public convenience init?(hex: String) {
         var hexSanitized = hex.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
@@ -226,6 +320,16 @@ extension UIColor {
             return nil
         }
         self.init(red: r, green: g, blue: b, alpha: a)
+    }
+
+    public static func adaptive(light: UIColor, dark: UIColor) -> UIColor {
+        if #available(iOS 13.0, *) {
+            return UIColor { traitCollection in
+                traitCollection.userInterfaceStyle == .dark ? dark : light
+            }
+        } else {
+            return light
+        }
     }
 }
 

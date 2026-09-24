@@ -8,6 +8,7 @@ final class ConsentViewController: UIViewController {
     private var selections: [String: Bool] = [:]
     private var checkboxes: [String: UISwitch] = [:]
     private var cardViews: [String: UIView] = [:]
+    private var categoryPills: [String: [CategoryPillView]] = [:]
     private var selectAllSwitch: UISwitch?
     private var acceptSelectedBtn: UIButton?
     private var acceptAllBtn: UIButton?
@@ -20,6 +21,15 @@ final class ConsentViewController: UIViewController {
     }
 
     static func present(notice: Notice, theme: NoticeTheme? = nil, presenter: UIViewController) async throws -> Selection {
+        let allMandatoryGranted = !notice.purposes.isEmpty && notice.purposes.filter { $0.mandatory }.allSatisfy { $0.granted }
+        let allPurposesGranted = !notice.purposes.isEmpty && notice.purposes.allSatisfy { $0.granted }
+        if notice.showNotice == false || allMandatoryGranted || allPurposesGranted {
+            let choices = notice.purposes.map { p in
+                ConsentChoice(purposeId: p.purposeId ?? "", granted: p.granted)
+            }
+            return Selection(choices: choices, language: "en", cancelled: false)
+        }
+
         let activeTheme = theme ?? notice.theme ?? NoticeTheme()
         return try await withCheckedThrowingContinuation { continuation in
             let vc = ConsentViewController(notice: notice, theme: activeTheme) { selection in
@@ -27,30 +37,109 @@ final class ConsentViewController: UIViewController {
             }
             let nav = UINavigationController(rootViewController: vc)
             nav.modalPresentationStyle = .formSheet
+            nav.presentationController?.delegate = vc
+            if activeTheme.interfaceStyle != .unspecified {
+                nav.overrideUserInterfaceStyle = activeTheme.interfaceStyle
+                vc.overrideUserInterfaceStyle = activeTheme.interfaceStyle
+            }
             if #available(iOS 15.0, *) {
                 if let sheet = nav.sheetPresentationController {
                     sheet.detents = [.large()]
                     sheet.prefersGrabberVisible = true
+                    sheet.delegate = vc
                 }
             }
+            let noticeKey = notice.noticeCode ?? notice.noticeId ?? "unknown"
+            SammatiLogger.debug("📱 ConsentViewController modal presenting for notice \(noticeKey)")
             presenter.present(nav, animated: true)
         }
     }
 
     init(notice: Notice, theme: NoticeTheme? = nil, completion: @escaping (Selection) -> Void) {
         self.notice = notice
-        self.theme = theme ?? notice.theme ?? NoticeTheme()
+        let activeTheme = theme ?? notice.theme ?? NoticeTheme()
+        self.theme = activeTheme
         self.completion = completion
         super.init(nibName: nil, bundle: nil)
+        if activeTheme.interfaceStyle != .unspecified {
+            self.overrideUserInterfaceStyle = activeTheme.interfaceStyle
+        }
     }
 
     required init?(coder: NSCoder) { fatalError() }
 
+    private var hasFinished = false
+
+    deinit {
+        if !hasFinished {
+            hasFinished = true
+            SammatiLogger.debug("📱 ConsentViewController deallocated without finish -> cancelling")
+            completion(Selection(choices: [], language: self.language, cancelled: true))
+        }
+    }
+
+    override func viewDidDisappear(_ animated: Bool) {
+        super.viewDidDisappear(animated)
+        if !hasFinished && (isBeingDismissed || navigationController?.isBeingDismissed == true) {
+            hasFinished = true
+            SammatiLogger.debug("📱 ConsentViewController viewDidDisappear dismissal -> cancelling")
+            completion(Selection(choices: [], language: self.language, cancelled: true))
+        }
+    }
+
     override func viewDidLoad() {
         super.viewDidLoad()
+        let allMandatoryGranted = !notice.purposes.isEmpty && notice.purposes.filter { $0.mandatory }.allSatisfy { $0.granted }
+        let allPurposesGranted = !notice.purposes.isEmpty && notice.purposes.allSatisfy { $0.granted }
+        if notice.showNotice == false || allMandatoryGranted || allPurposesGranted {
+            if !hasFinished {
+                hasFinished = true
+                let choices = notice.purposes.map { ConsentChoice(purposeId: $0.purposeId ?? "", granted: $0.granted) }
+                completion(Selection(choices: choices, language: self.language, cancelled: false))
+            }
+            dismiss(animated: false)
+            return
+        }
+
         navigationController?.setNavigationBarHidden(true, animated: false)
-        view.backgroundColor = UIColor(red: 0.98, green: 0.98, blue: 0.99, alpha: 1.0)
+        view.backgroundColor = UIColor.adaptive(
+            light: UIColor(red: 0.975, green: 0.98, blue: 0.99, alpha: 1.0),
+            dark: UIColor(red: 0.08, green: 0.09, blue: 0.12, alpha: 1.0)
+        )
         buildUI()
+    }
+
+    override func traitCollectionDidChange(_ previousTraitCollection: UITraitCollection?) {
+        super.traitCollectionDidChange(previousTraitCollection)
+        guard traitCollection.hasDifferentColorAppearance(comparedTo: previousTraitCollection) else { return }
+        refreshAppearance()
+    }
+
+    private func refreshAppearance() {
+        for (id, _) in cardViews {
+            updateCardState(purposeId: id)
+        }
+        if let alertBox = view.viewWithTag(1001) {
+            let alertBorder = UIColor.adaptive(
+                light: UIColor(red: 0.996, green: 0.843, blue: 0.667, alpha: 1.0),
+                dark: UIColor(red: 0.52, green: 0.28, blue: 0.10, alpha: 1.0)
+            )
+            alertBox.layer.borderColor = alertBorder.resolvedColor(with: traitCollection).cgColor
+        }
+        if let panel = view.viewWithTag(1002) {
+            let panelBorder = UIColor.adaptive(
+                light: UIColor(red: 0.886, green: 0.918, blue: 0.945, alpha: 1.0),
+                dark: UIColor(red: 0.20, green: 0.24, blue: 0.31, alpha: 1.0)
+            )
+            panel.layer.borderColor = panelBorder.resolvedColor(with: traitCollection).cgColor
+        }
+        if let secBtn = acceptSelectedBtn {
+            let secBorderColor = theme.uiSecondaryColor?.withAlphaComponent(0.5) ?? UIColor.adaptive(
+                light: UIColor(red: 0.80, green: 0.85, blue: 0.90, alpha: 1.0),
+                dark: UIColor(red: 0.30, green: 0.36, blue: 0.45, alpha: 1.0)
+            )
+            secBtn.layer.borderColor = secBorderColor.resolvedColor(with: traitCollection).cgColor
+        }
     }
 
     private func buildUI() {
@@ -99,7 +188,10 @@ final class ConsentViewController: UIViewController {
         introLabel.text = notice.introductionText ?? "We process your personal data only when it is necessary to provide our services to you. By selecting Accept All or Accept Selected, you consent to the processing of your personal data for the purposes listed below."
         introLabel.numberOfLines = 0
         introLabel.font = .systemFont(ofSize: 14, weight: .regular)
-        introLabel.textColor = UIColor(red: 0.28, green: 0.33, blue: 0.41, alpha: 1.0)
+        introLabel.textColor = UIColor.adaptive(
+            light: UIColor(red: 0.28, green: 0.33, blue: 0.41, alpha: 1.0),
+            dark: UIColor(red: 0.76, green: 0.81, blue: 0.88, alpha: 1.0)
+        )
         bodyStack.addArrangedSubview(introLabel)
 
         // 2b. Mandatory Alert Banner (if mandatory items exist)
@@ -119,7 +211,10 @@ final class ConsentViewController: UIViewController {
             footerLabel.text = footerText
             footerLabel.numberOfLines = 0
             footerLabel.font = .systemFont(ofSize: 12, weight: .regular)
-            footerLabel.textColor = UIColor(red: 0.39, green: 0.45, blue: 0.55, alpha: 1.0)
+            footerLabel.textColor = UIColor.adaptive(
+                light: UIColor(red: 0.39, green: 0.45, blue: 0.55, alpha: 1.0),
+                dark: UIColor(red: 0.62, green: 0.68, blue: 0.76, alpha: 1.0)
+            )
             bodyStack.addArrangedSubview(footerLabel)
         }
 
@@ -133,11 +228,17 @@ final class ConsentViewController: UIViewController {
     // MARK: - Top Header Bar
     private func buildTopBar() -> UIView {
         let container = UIView()
-        container.backgroundColor = .systemBackground
+        container.backgroundColor = UIColor.adaptive(
+            light: .white,
+            dark: UIColor(red: 0.11, green: 0.13, blue: 0.17, alpha: 1.0)
+        )
         container.translatesAutoresizingMaskIntoConstraints = false
 
         let borderBottom = UIView()
-        borderBottom.backgroundColor = UIColor(red: 0.91, green: 0.93, blue: 0.95, alpha: 1.0)
+        borderBottom.backgroundColor = UIColor.adaptive(
+            light: UIColor(red: 0.90, green: 0.92, blue: 0.94, alpha: 1.0),
+            dark: UIColor(red: 0.19, green: 0.23, blue: 0.29, alpha: 1.0)
+        )
         borderBottom.translatesAutoresizingMaskIntoConstraints = false
         container.addSubview(borderBottom)
 
@@ -181,7 +282,10 @@ final class ConsentViewController: UIViewController {
         let titleLabel = UILabel()
         titleLabel.text = notice.noticeName ?? notice.noticeCode ?? "Consent Notice"
         titleLabel.font = theme.font(ofSize: 16, weight: .bold)
-        titleLabel.textColor = UIColor(red: 0.03, green: 0.29, blue: 0.38, alpha: 1.0)
+        titleLabel.textColor = UIColor.adaptive(
+            light: UIColor(red: 0.05, green: 0.15, blue: 0.25, alpha: 1.0),
+            dark: UIColor(red: 0.95, green: 0.96, blue: 0.98, alpha: 1.0)
+        )
         titleLabel.textAlignment = .center
         titleLabel.numberOfLines = 1
         titleLabel.translatesAutoresizingMaskIntoConstraints = false
@@ -189,9 +293,15 @@ final class ConsentViewController: UIViewController {
         // Close Button
         let closeBtn = UIButton(type: .system)
         closeBtn.setTitle("✕", for: .normal)
-        closeBtn.titleLabel?.font = .systemFont(ofSize: 16, weight: .bold)
-        closeBtn.setTitleColor(UIColor(red: 0.28, green: 0.33, blue: 0.41, alpha: 1.0), for: .normal)
-        closeBtn.backgroundColor = UIColor(red: 0.95, green: 0.96, blue: 0.98, alpha: 1.0)
+        closeBtn.titleLabel?.font = .systemFont(ofSize: 15, weight: .bold)
+        closeBtn.setTitleColor(UIColor.adaptive(
+            light: UIColor(red: 0.35, green: 0.40, blue: 0.48, alpha: 1.0),
+            dark: UIColor(red: 0.85, green: 0.88, blue: 0.92, alpha: 1.0)
+        ), for: .normal)
+        closeBtn.backgroundColor = UIColor.adaptive(
+            light: UIColor(red: 0.93, green: 0.95, blue: 0.97, alpha: 1.0),
+            dark: UIColor(red: 0.18, green: 0.22, blue: 0.28, alpha: 1.0)
+        )
         closeBtn.layer.cornerRadius = 16
         closeBtn.clipsToBounds = true
         closeBtn.translatesAutoresizingMaskIntoConstraints = false
@@ -235,8 +345,16 @@ final class ConsentViewController: UIViewController {
     // MARK: - Mandatory Alert Banner
     private func buildMandatoryAlertBanner() -> UIView {
         let container = UIView()
-        container.backgroundColor = UIColor(red: 1.0, green: 0.968, blue: 0.929, alpha: 1.0)
-        container.layer.borderColor = UIColor(red: 0.996, green: 0.843, blue: 0.667, alpha: 1.0).cgColor
+        container.tag = 1001
+        container.backgroundColor = UIColor.adaptive(
+            light: UIColor(red: 1.0, green: 0.968, blue: 0.929, alpha: 1.0),
+            dark: UIColor(red: 0.22, green: 0.13, blue: 0.06, alpha: 0.9)
+        )
+        let alertBorder = UIColor.adaptive(
+            light: UIColor(red: 0.996, green: 0.843, blue: 0.667, alpha: 1.0),
+            dark: UIColor(red: 0.52, green: 0.28, blue: 0.10, alpha: 1.0)
+        )
+        container.layer.borderColor = alertBorder.resolvedColor(with: traitCollection).cgColor
         container.layer.borderWidth = 1.0
         container.layer.cornerRadius = 10
         container.translatesAutoresizingMaskIntoConstraints = false
@@ -247,12 +365,20 @@ final class ConsentViewController: UIViewController {
         stack.spacing = 8
         stack.translatesAutoresizingMaskIntoConstraints = false
 
-        let badge = buildPillBadge(text: "REQUIRED", bg: UIColor(red: 1.0, green: 0.93, blue: 0.84, alpha: 1.0), border: UIColor(red: 0.99, green: 0.80, blue: 0.60, alpha: 1.0), textColor: UIColor(red: 0.76, green: 0.25, blue: 0.05, alpha: 1.0))
+        let badge = buildPillBadge(
+            text: "REQUIRED",
+            bg: UIColor.adaptive(light: UIColor(red: 1.0, green: 0.93, blue: 0.84, alpha: 1.0), dark: UIColor(red: 0.38, green: 0.18, blue: 0.08, alpha: 1.0)),
+            border: UIColor.adaptive(light: UIColor(red: 0.99, green: 0.80, blue: 0.60, alpha: 1.0), dark: UIColor(red: 0.60, green: 0.30, blue: 0.12, alpha: 1.0)),
+            textColor: UIColor.adaptive(light: UIColor(red: 0.76, green: 0.25, blue: 0.05, alpha: 1.0), dark: UIColor(red: 1.0, green: 0.65, blue: 0.40, alpha: 1.0))
+        )
 
         let label = UILabel()
         label.text = "Required purposes must be accepted to proceed."
         label.font = .systemFont(ofSize: 13, weight: .medium)
-        label.textColor = UIColor(red: 0.60, green: 0.20, blue: 0.07, alpha: 1.0)
+        label.textColor = UIColor.adaptive(
+            light: UIColor(red: 0.60, green: 0.20, blue: 0.07, alpha: 1.0),
+            dark: UIColor(red: 1.0, green: 0.78, blue: 0.58, alpha: 1.0)
+        )
         label.numberOfLines = 0
 
         stack.addArrangedSubview(badge)
@@ -272,8 +398,16 @@ final class ConsentViewController: UIViewController {
     // MARK: - Purpose Panel Container
     private func buildPurposePanel() -> UIView {
         let panel = UIView()
-        panel.backgroundColor = UIColor(red: 0.984, green: 0.992, blue: 1.0, alpha: 1.0)
-        panel.layer.borderColor = UIColor(red: 0.886, green: 0.918, blue: 0.945, alpha: 1.0).cgColor
+        panel.tag = 1002
+        panel.backgroundColor = UIColor.adaptive(
+            light: UIColor(red: 0.984, green: 0.992, blue: 1.0, alpha: 1.0),
+            dark: UIColor(red: 0.11, green: 0.13, blue: 0.17, alpha: 1.0)
+        )
+        let panelBorder = UIColor.adaptive(
+            light: UIColor(red: 0.886, green: 0.918, blue: 0.945, alpha: 1.0),
+            dark: UIColor(red: 0.20, green: 0.24, blue: 0.31, alpha: 1.0)
+        )
+        panel.layer.borderColor = panelBorder.resolvedColor(with: traitCollection).cgColor
         panel.layer.borderWidth = 1.0
         panel.layer.cornerRadius = 14
         panel.clipsToBounds = true
@@ -294,11 +428,17 @@ final class ConsentViewController: UIViewController {
 
         // Purpose Panel Header Bar
         let headerBar = UIView()
-        headerBar.backgroundColor = UIColor(red: 0.957, green: 0.973, blue: 0.984, alpha: 1.0)
+        headerBar.backgroundColor = UIColor.adaptive(
+            light: UIColor(red: 0.957, green: 0.973, blue: 0.984, alpha: 1.0),
+            dark: UIColor(red: 0.14, green: 0.16, blue: 0.21, alpha: 1.0)
+        )
         headerBar.translatesAutoresizingMaskIntoConstraints = false
 
         let headerBorder = UIView()
-        headerBorder.backgroundColor = UIColor(red: 0.91, green: 0.93, blue: 0.95, alpha: 1.0)
+        headerBorder.backgroundColor = UIColor.adaptive(
+            light: UIColor(red: 0.91, green: 0.93, blue: 0.95, alpha: 1.0),
+            dark: UIColor(red: 0.20, green: 0.24, blue: 0.31, alpha: 1.0)
+        )
         headerBorder.translatesAutoresizingMaskIntoConstraints = false
         headerBar.addSubview(headerBorder)
 
@@ -319,7 +459,10 @@ final class ConsentViewController: UIViewController {
         let selectAllLabel = UILabel()
         selectAllLabel.text = "Select All"
         selectAllLabel.font = theme.font(ofSize: 14, weight: .bold)
-        selectAllLabel.textColor = UIColor(red: 0.03, green: 0.29, blue: 0.38, alpha: 1.0)
+        selectAllLabel.textColor = UIColor.adaptive(
+            light: UIColor(red: 0.05, green: 0.15, blue: 0.25, alpha: 1.0),
+            dark: UIColor(red: 0.94, green: 0.96, blue: 0.98, alpha: 1.0)
+        )
 
         selectAllStack.addArrangedSubview(selectAllToggle)
         selectAllStack.addArrangedSubview(selectAllLabel)
@@ -327,9 +470,9 @@ final class ConsentViewController: UIViewController {
 
         let countPill = buildPillBadge(
             text: "\(notice.purposes.count) Purposes",
-            bg: .white,
-            border: UIColor(red: 0.86, green: 0.90, blue: 0.94, alpha: 1.0),
-            textColor: UIColor(red: 0.39, green: 0.45, blue: 0.55, alpha: 1.0)
+            bg: UIColor.adaptive(light: .white, dark: UIColor(red: 0.18, green: 0.22, blue: 0.28, alpha: 1.0)),
+            border: UIColor.adaptive(light: UIColor(red: 0.86, green: 0.90, blue: 0.94, alpha: 1.0), dark: UIColor(red: 0.26, green: 0.31, blue: 0.39, alpha: 1.0)),
+            textColor: UIColor.adaptive(light: UIColor(red: 0.39, green: 0.45, blue: 0.55, alpha: 1.0), dark: UIColor(red: 0.78, green: 0.83, blue: 0.89, alpha: 1.0))
         )
         countPill.translatesAutoresizingMaskIntoConstraints = false
         headerBar.addSubview(countPill)
@@ -392,9 +535,9 @@ final class ConsentViewController: UIViewController {
 
         let contentStack = UIStackView()
         contentStack.axis = .vertical
-        contentStack.spacing = 8
+        contentStack.spacing = 10
         contentStack.isLayoutMarginsRelativeArrangement = true
-        contentStack.layoutMargins = UIEdgeInsets(top: 12, left: 12, bottom: 12, right: 12)
+        contentStack.layoutMargins = UIEdgeInsets(top: 14, left: 14, bottom: 14, right: 14)
         contentStack.translatesAutoresizingMaskIntoConstraints = false
         card.addSubview(contentStack)
 
@@ -419,16 +562,19 @@ final class ConsentViewController: UIViewController {
         let titleLabel = UILabel()
         titleLabel.text = purpose.purposeName ?? purpose.purposeCode ?? "Purpose"
         titleLabel.font = .systemFont(ofSize: 15, weight: .bold)
-        titleLabel.textColor = UIColor(red: 0.06, green: 0.09, blue: 0.16, alpha: 1.0)
+        titleLabel.textColor = UIColor.adaptive(
+            light: UIColor(red: 0.06, green: 0.09, blue: 0.16, alpha: 1.0),
+            dark: UIColor(red: 0.96, green: 0.97, blue: 0.99, alpha: 1.0)
+        )
         titleLabel.numberOfLines = 0
         titleStack.addArrangedSubview(titleLabel)
 
         if purpose.mandatory {
             let reqBadge = buildPillBadge(
                 text: "REQUIRED",
-                bg: UIColor(red: 1.0, green: 0.945, blue: 0.949, alpha: 1.0),
-                border: UIColor(red: 0.996, green: 0.804, blue: 0.827, alpha: 1.0),
-                textColor: UIColor(red: 0.745, green: 0.071, blue: 0.235, alpha: 1.0)
+                bg: UIColor.adaptive(light: UIColor(red: 1.0, green: 0.945, blue: 0.949, alpha: 1.0), dark: UIColor(red: 0.35, green: 0.08, blue: 0.12, alpha: 0.8)),
+                border: UIColor.adaptive(light: UIColor(red: 0.996, green: 0.804, blue: 0.827, alpha: 1.0), dark: UIColor(red: 0.60, green: 0.15, blue: 0.22, alpha: 1.0)),
+                textColor: UIColor.adaptive(light: UIColor(red: 0.745, green: 0.071, blue: 0.235, alpha: 1.0), dark: UIColor(red: 1.0, green: 0.65, blue: 0.72, alpha: 1.0))
             )
             titleStack.addArrangedSubview(reqBadge)
         }
@@ -436,9 +582,9 @@ final class ConsentViewController: UIViewController {
         if isGranted {
             let grantedBadge = buildPillBadge(
                 text: "CONSENTED",
-                bg: UIColor(red: 0.925, green: 0.992, blue: 0.961, alpha: 1.0),
-                border: UIColor(red: 0.655, green: 0.953, blue: 0.816, alpha: 1.0),
-                textColor: UIColor(red: 0.016, green: 0.471, blue: 0.341, alpha: 1.0)
+                bg: UIColor.adaptive(light: UIColor(red: 0.925, green: 0.992, blue: 0.961, alpha: 1.0), dark: UIColor(red: 0.05, green: 0.25, blue: 0.18, alpha: 0.8)),
+                border: UIColor.adaptive(light: UIColor(red: 0.655, green: 0.953, blue: 0.816, alpha: 1.0), dark: UIColor(red: 0.12, green: 0.50, blue: 0.35, alpha: 1.0)),
+                textColor: UIColor.adaptive(light: UIColor(red: 0.016, green: 0.471, blue: 0.341, alpha: 1.0), dark: UIColor(red: 0.45, green: 0.92, blue: 0.72, alpha: 1.0))
             )
             titleStack.addArrangedSubview(grantedBadge)
         }
@@ -469,45 +615,49 @@ final class ConsentViewController: UIViewController {
             let descLabel = UILabel()
             descLabel.text = description
             descLabel.font = .systemFont(ofSize: 13, weight: .regular)
-            descLabel.textColor = UIColor(red: 0.39, green: 0.45, blue: 0.55, alpha: 1.0)
+            descLabel.textColor = UIColor.adaptive(
+                light: UIColor(red: 0.39, green: 0.45, blue: 0.55, alpha: 1.0),
+                dark: UIColor(red: 0.68, green: 0.74, blue: 0.82, alpha: 1.0)
+            )
             descLabel.numberOfLines = 0
             contentStack.addArrangedSubview(descLabel)
         }
 
-        // Data Categories Pills
+        // Data Categories Pills with PillFlowView
         if !purpose.categories.isEmpty {
             let catContainer = UIStackView()
             catContainer.axis = .vertical
-            catContainer.spacing = 4
+            catContainer.spacing = 6
 
             let catLabel = UILabel()
             catLabel.text = "DATA CATEGORIES"
             catLabel.font = .systemFont(ofSize: 10, weight: .bold)
-            catLabel.textColor = UIColor(red: 0.58, green: 0.64, blue: 0.72, alpha: 1.0)
+            catLabel.textColor = UIColor.adaptive(
+                light: UIColor(red: 0.48, green: 0.54, blue: 0.62, alpha: 1.0),
+                dark: UIColor(red: 0.60, green: 0.66, blue: 0.75, alpha: 1.0)
+            )
             catContainer.addArrangedSubview(catLabel)
 
-            let pillsStack = UIStackView()
-            pillsStack.axis = .horizontal
-            pillsStack.spacing = 6
-            pillsStack.alignment = .leading
+            let flowView = PillFlowView()
+            flowView.horizontalSpacing = 8
+            flowView.verticalSpacing = 8
 
             let sortedCat = purpose.categories.sorted {
                 ($0.displayOrder ?? Int.max, $0.categoryId ?? "") < ($1.displayOrder ?? Int.max, $1.categoryId ?? "")
             }
 
+            var pills: [CategoryPillView] = []
             for cat in sortedCat {
                 if let name = cat.categoryName ?? cat.categoryCode {
-                    let pill = buildPillBadge(
-                        text: name,
-                        bg: UIColor(red: 0.945, green: 0.961, blue: 0.976, alpha: 1.0),
-                        border: UIColor(red: 0.886, green: 0.91, blue: 0.941, alpha: 1.0),
-                        textColor: UIColor(red: 0.28, green: 0.33, blue: 0.41, alpha: 1.0)
-                    )
-                    pillsStack.addArrangedSubview(pill)
+                    let pill = CategoryPillView(name: name, primaryColor: theme.uiPrimaryColor)
+                    pills.append(pill)
                 }
             }
-
-            catContainer.addArrangedSubview(pillsStack)
+            if !purposeId.isEmpty {
+                categoryPills[purposeId] = pills
+            }
+            flowView.setPills(pills)
+            catContainer.addArrangedSubview(flowView)
             contentStack.addArrangedSubview(catContainer)
         }
 
@@ -521,26 +671,52 @@ final class ConsentViewController: UIViewController {
         let purpose = notice.purposes.first { $0.purposeId == purposeId }
         let isGranted = purpose?.granted ?? false
 
+        if let pills = categoryPills[purposeId] {
+            for pill in pills {
+                pill.setSelectedState(isSelected)
+            }
+        }
+
+        let isDark = traitCollection.userInterfaceStyle == .dark
+
         if isGranted {
-            card.backgroundColor = UIColor(red: 0.97, green: 0.98, blue: 0.99, alpha: 1.0)
-            card.layer.borderColor = UIColor(red: 0.88, green: 0.90, blue: 0.92, alpha: 1.0).cgColor
+            card.backgroundColor = isDark
+                ? UIColor(red: 0.12, green: 0.14, blue: 0.18, alpha: 1.0)
+                : UIColor(red: 0.97, green: 0.98, blue: 0.99, alpha: 1.0)
+            card.layer.borderColor = (isDark
+                ? UIColor(red: 0.20, green: 0.24, blue: 0.30, alpha: 1.0)
+                : UIColor(red: 0.88, green: 0.90, blue: 0.92, alpha: 1.0)).cgColor
         } else if isSelected {
-            card.backgroundColor = theme.uiPrimaryColor.withAlphaComponent(0.06)
-            card.layer.borderColor = theme.uiPrimaryColor.withAlphaComponent(0.4).cgColor
+            card.backgroundColor = isDark
+                ? theme.uiPrimaryColor.withAlphaComponent(0.18)
+                : theme.uiPrimaryColor.withAlphaComponent(0.06)
+            card.layer.borderColor = (isDark
+                ? theme.uiPrimaryColor.withAlphaComponent(0.65)
+                : theme.uiPrimaryColor.withAlphaComponent(0.40)).cgColor
         } else {
-            card.backgroundColor = .white
-            card.layer.borderColor = UIColor(red: 0.886, green: 0.910, blue: 0.941, alpha: 1.0).cgColor
+            card.backgroundColor = isDark
+                ? UIColor(red: 0.14, green: 0.16, blue: 0.21, alpha: 1.0)
+                : .white
+            card.layer.borderColor = (isDark
+                ? UIColor(red: 0.22, green: 0.26, blue: 0.33, alpha: 1.0)
+                : UIColor(red: 0.886, green: 0.910, blue: 0.941, alpha: 1.0)).cgColor
         }
     }
 
     // MARK: - Bottom Pinned Action Bar
     private func buildBottomActionBar() -> UIView {
         let container = UIView()
-        container.backgroundColor = .systemBackground
+        container.backgroundColor = UIColor.adaptive(
+            light: .white,
+            dark: UIColor(red: 0.11, green: 0.13, blue: 0.17, alpha: 1.0)
+        )
         container.translatesAutoresizingMaskIntoConstraints = false
 
         let borderTop = UIView()
-        borderTop.backgroundColor = UIColor(red: 0.91, green: 0.93, blue: 0.95, alpha: 1.0)
+        borderTop.backgroundColor = UIColor.adaptive(
+            light: UIColor(red: 0.90, green: 0.92, blue: 0.94, alpha: 1.0),
+            dark: UIColor(red: 0.19, green: 0.23, blue: 0.29, alpha: 1.0)
+        )
         borderTop.translatesAutoresizingMaskIntoConstraints = false
         container.addSubview(borderTop)
 
@@ -559,10 +735,20 @@ final class ConsentViewController: UIViewController {
         let secondaryBtn = UIButton(type: .system)
         secondaryBtn.setTitle("Accept Selected", for: .normal)
         secondaryBtn.titleLabel?.font = theme.font(ofSize: 14, weight: .bold)
-        let secTextColor = theme.uiSecondaryColor ?? UIColor(red: 0.03, green: 0.29, blue: 0.38, alpha: 1.0)
+        let secTextColor = theme.uiSecondaryColor ?? UIColor.adaptive(
+            light: UIColor(red: 0.03, green: 0.29, blue: 0.38, alpha: 1.0),
+            dark: UIColor(red: 0.90, green: 0.93, blue: 0.98, alpha: 1.0)
+        )
         secondaryBtn.setTitleColor(secTextColor, for: .normal)
-        secondaryBtn.backgroundColor = .white
-        secondaryBtn.layer.borderColor = theme.uiSecondaryColor?.withAlphaComponent(0.5).cgColor ?? UIColor(red: 0.84, green: 0.89, blue: 0.93, alpha: 1.0).cgColor
+        secondaryBtn.backgroundColor = UIColor.adaptive(
+            light: .white,
+            dark: UIColor(red: 0.16, green: 0.19, blue: 0.25, alpha: 1.0)
+        )
+        let secBorderColor = theme.uiSecondaryColor?.withAlphaComponent(0.5) ?? UIColor.adaptive(
+            light: UIColor(red: 0.80, green: 0.85, blue: 0.90, alpha: 1.0),
+            dark: UIColor(red: 0.30, green: 0.36, blue: 0.45, alpha: 1.0)
+        )
+        secondaryBtn.layer.borderColor = secBorderColor.resolvedColor(with: traitCollection).cgColor
         secondaryBtn.layer.borderWidth = 1.0
         secondaryBtn.layer.cornerRadius = 10
         secondaryBtn.heightAnchor.constraint(equalToConstant: 46).isActive = true
@@ -588,7 +774,10 @@ final class ConsentViewController: UIViewController {
         let securityLabel = UILabel()
         securityLabel.text = "Secured by Sammati Consent Gateway"
         securityLabel.font = .systemFont(ofSize: 11, weight: .medium)
-        securityLabel.textColor = UIColor(red: 0.58, green: 0.64, blue: 0.72, alpha: 1.0)
+        securityLabel.textColor = UIColor.adaptive(
+            light: UIColor(red: 0.50, green: 0.56, blue: 0.64, alpha: 1.0),
+            dark: UIColor(red: 0.65, green: 0.70, blue: 0.78, alpha: 1.0)
+        )
         securityLabel.textAlignment = .center
         stack.addArrangedSubview(securityLabel)
 
@@ -615,11 +804,9 @@ final class ConsentViewController: UIViewController {
         label.textColor = textColor
         label.translatesAutoresizingMaskIntoConstraints = false
 
-        let pill = UIView()
-        pill.backgroundColor = bg
-        pill.layer.borderColor = border.cgColor
-        pill.layer.borderWidth = 1.0
+        let pill = DynamicPillView(bgColor: bg, borderColor: border)
         pill.layer.cornerRadius = 8
+        pill.layer.borderWidth = 1.0
         pill.clipsToBounds = true
         pill.translatesAutoresizingMaskIntoConstraints = false
         pill.addSubview(label)
@@ -630,6 +817,11 @@ final class ConsentViewController: UIViewController {
             label.leadingAnchor.constraint(equalTo: pill.leadingAnchor, constant: 6),
             label.trailingAnchor.constraint(equalTo: pill.trailingAnchor, constant: -6)
         ])
+
+        pill.setContentHuggingPriority(.required, for: .horizontal)
+        pill.setContentHuggingPriority(.required, for: .vertical)
+        pill.setContentCompressionResistancePriority(.required, for: .horizontal)
+        pill.setContentCompressionResistancePriority(.required, for: .vertical)
 
         return pill
     }
@@ -690,14 +882,19 @@ final class ConsentViewController: UIViewController {
             return ConsentChoice(purposeId: id, granted: all ? true : (selections[id] ?? false))
         }
 
-        dismiss(animated: true) { [completion] in
-            completion(Selection(choices: choices, language: self.language, cancelled: false))
+        guard !hasFinished else { return }
+        hasFinished = true
+        dismiss(animated: true) { [completion, language = self.language] in
+            completion(Selection(choices: choices, language: language, cancelled: false))
         }
     }
 
     @objc private func cancel() {
-        dismiss(animated: true) { [completion] in
-            completion(Selection(choices: [], language: self.language, cancelled: true))
+        guard !hasFinished else { return }
+        hasFinished = true
+        SammatiLogger.debug("📱 User tapped cancel/close button in ConsentViewController")
+        dismiss(animated: true) { [completion, language = self.language] in
+            completion(Selection(choices: [], language: language, cancelled: true))
         }
     }
 
@@ -708,20 +905,207 @@ final class ConsentViewController: UIViewController {
     }
 }
 
+extension ConsentViewController: UIAdaptivePresentationControllerDelegate, UISheetPresentationControllerDelegate {
+    func presentationControllerDidDismiss(_ presentationController: UIPresentationController) {
+        if !hasFinished {
+            hasFinished = true
+            SammatiLogger.debug("📱 User dragged down to dismiss sheet -> presentationControllerDidDismiss called")
+            completion(Selection(choices: [], language: self.language, cancelled: true))
+        }
+    }
+}
+
+// MARK: - Dynamic Supporting Views
+
+final class DynamicPillView: UIView {
+    private let dynamicBgColor: UIColor
+    private let dynamicBorderColor: UIColor
+
+    init(bgColor: UIColor, borderColor: UIColor) {
+        self.dynamicBgColor = bgColor
+        self.dynamicBorderColor = borderColor
+        super.init(frame: .zero)
+        updateColors()
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    func updateColors() {
+        backgroundColor = dynamicBgColor
+        layer.borderColor = dynamicBorderColor.resolvedColor(with: traitCollection).cgColor
+    }
+
+    override func traitCollectionDidChange(_ previousTraitCollection: UITraitCollection?) {
+        super.traitCollectionDidChange(previousTraitCollection)
+        updateColors()
+    }
+}
+
+final class CategoryPillView: UIView {
+    private let label = UILabel()
+    private var isCardSelected: Bool = false
+    private let primaryColor: UIColor
+
+    init(name: String, primaryColor: UIColor = UIColor(red: 0.0, green: 0.357, blue: 0.929, alpha: 1.0)) {
+        self.primaryColor = primaryColor
+        super.init(frame: .zero)
+        setupUI(name: name)
+        updateAppearance()
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    private func setupUI(name: String) {
+        layer.cornerRadius = 6
+        layer.borderWidth = 1.0
+        clipsToBounds = true
+
+        label.text = name
+        label.font = .systemFont(ofSize: 12, weight: .medium)
+        label.textAlignment = .center
+        label.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(label)
+
+        NSLayoutConstraint.activate([
+            label.topAnchor.constraint(equalTo: topAnchor, constant: 5),
+            label.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -5),
+            label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10),
+            label.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10)
+        ])
+    }
+
+    override var intrinsicContentSize: CGSize {
+        let labelSize = label.intrinsicContentSize
+        return CGSize(width: labelSize.width + 20, height: max(26, labelSize.height + 10))
+    }
+
+    func setSelectedState(_ selected: Bool) {
+        self.isCardSelected = selected
+        updateAppearance()
+    }
+
+    func updateAppearance() {
+        let isDark = traitCollection.userInterfaceStyle == .dark
+        if isCardSelected {
+            if isDark {
+                backgroundColor = primaryColor.withAlphaComponent(0.20)
+                layer.borderColor = primaryColor.withAlphaComponent(0.45).cgColor
+                label.textColor = UIColor(red: 0.70, green: 0.85, blue: 1.0, alpha: 1.0)
+            } else {
+                backgroundColor = primaryColor.withAlphaComponent(0.08)
+                layer.borderColor = primaryColor.withAlphaComponent(0.28).cgColor
+                label.textColor = primaryColor
+            }
+        } else {
+            if isDark {
+                backgroundColor = UIColor(red: 0.16, green: 0.20, blue: 0.26, alpha: 1.0)
+                layer.borderColor = UIColor(red: 0.26, green: 0.32, blue: 0.42, alpha: 1.0).cgColor
+                label.textColor = UIColor(red: 0.88, green: 0.92, blue: 0.96, alpha: 1.0)
+            } else {
+                backgroundColor = UIColor(red: 0.94, green: 0.96, blue: 0.98, alpha: 1.0)
+                layer.borderColor = UIColor(red: 0.84, green: 0.88, blue: 0.93, alpha: 1.0).cgColor
+                label.textColor = UIColor(red: 0.22, green: 0.28, blue: 0.38, alpha: 1.0)
+            }
+        }
+    }
+
+    override func traitCollectionDidChange(_ previousTraitCollection: UITraitCollection?) {
+        super.traitCollectionDidChange(previousTraitCollection)
+        updateAppearance()
+    }
+}
+
+final class PillFlowView: UIView {
+    var horizontalSpacing: CGFloat = 8
+    var verticalSpacing: CGFloat = 8
+    private var pillViews: [UIView] = []
+    private var heightConstraint: NSLayoutConstraint?
+
+    func setPills(_ pills: [UIView]) {
+        pillViews.forEach { $0.removeFromSuperview() }
+        pillViews = pills
+        for pill in pillViews {
+            addSubview(pill)
+        }
+        let estHeight: CGFloat = pills.isEmpty ? 0 : 28
+        if let hc = heightConstraint {
+            hc.constant = estHeight
+        } else {
+            let hc = heightAnchor.constraint(equalToConstant: estHeight)
+            hc.priority = UILayoutPriority(999)
+            hc.isActive = true
+            heightConstraint = hc
+        }
+        invalidateIntrinsicContentSize()
+        setNeedsLayout()
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        let availableWidth = bounds.width
+        guard availableWidth > 0 else { return }
+
+        var currentX: CGFloat = 0
+        var currentY: CGFloat = 0
+        var lineHeight: CGFloat = 0
+
+        for pill in pillViews {
+            let pillSize = pill.intrinsicContentSize
+            if currentX + pillSize.width > availableWidth && currentX > 0 {
+                currentX = 0
+                currentY += lineHeight + verticalSpacing
+                lineHeight = 0
+            }
+            pill.frame = CGRect(x: currentX, y: currentY, width: pillSize.width, height: pillSize.height)
+            lineHeight = max(lineHeight, pillSize.height)
+            currentX += pillSize.width + horizontalSpacing
+        }
+
+        let totalHeight = currentY + lineHeight
+        if let hc = heightConstraint, hc.constant != totalHeight {
+            hc.constant = totalHeight
+            invalidateIntrinsicContentSize()
+        }
+    }
+
+    override var intrinsicContentSize: CGSize {
+        let availableWidth = bounds.width > 0 ? bounds.width : (superview?.bounds.width ?? 320)
+        guard availableWidth > 0 else { return CGSize(width: 320, height: 28) }
+
+        var currentX: CGFloat = 0
+        var currentY: CGFloat = 0
+        var lineHeight: CGFloat = 0
+
+        for pill in pillViews {
+            let pillSize = pill.intrinsicContentSize
+            if currentX + pillSize.width > availableWidth && currentX > 0 {
+                currentX = 0
+                currentY += lineHeight + verticalSpacing
+                lineHeight = 0
+            }
+            lineHeight = max(lineHeight, pillSize.height)
+            currentX += pillSize.width + horizontalSpacing
+        }
+        return CGSize(width: availableWidth, height: max(28, currentY + lineHeight))
+    }
+}
+
 // MARK: - Xcode Canvas Live Preview
 #if DEBUG
 import SwiftUI
 
 @available(iOS 13.0, *)
 struct ConsentViewController_Preview: UIViewControllerRepresentable {
+    var isDarkMode: Bool = false
+
     func makeUIViewController(context: Context) -> UINavigationController {
         let dummyNotice = Notice(
             noticeId: "preview-1",
-            noticeCode: "LUXE",
+            noticeCode: "LOGISTICS",
             version: "1.0",
-            noticeName: "LuxeStay Data Protection Consent",
-            introductionText: "We process your personal data only when it is necessary to provide our services to you. By selecting Accept All or Accept Selected, you consent to the processing of your personal data for the purposes listed below.",
-            footerText: "For questions about data protection, contact privacy@luxestay.com",
+            noticeName: "Logistics Policy Consent",
+            introductionText: "We value your privacy. This consent notice explains how your personal data will be collected, used, stored and processed to provide you with our service. Please review the information carefully and provide your consent.",
+            footerText: "Please review your information carefully and provide your consent where applications.",
             rightsText: nil,
             contactInformation: nil,
             showNotice: true,
@@ -729,34 +1113,41 @@ struct ConsentViewController_Preview: UIViewControllerRepresentable {
             purposes: [
                 Purpose(
                     purposeId: "p1",
-                    purposeCode: "BOOKING_PROCESSING",
-                    purposeName: "Booking & Reservation Processing",
-                    purposeDescription: "Process your hotel reservations, process payments, and manage booking confirmations.",
+                    purposeCode: "MARKETING_EMAIL",
+                    purposeName: "Marketing Email",
+                    purposeDescription: nil,
                     isMandatory: true,
                     alreadyGranted: false,
                     displayOrder: 1,
                     categories: [
-                        PurposeCategory(categoryId: "c1", categoryCode: "PERSONAL_INFO", categoryName: "Personal Profile", displayOrder: 1),
-                        PurposeCategory(categoryId: "c2", categoryCode: "PAYMENT_DETAILS", categoryName: "Payment Info", displayOrder: 2)
+                        PurposeCategory(categoryId: "c1", categoryCode: "EMAIL", categoryName: "Email", displayOrder: 1)
                     ]
                 ),
                 Purpose(
                     purposeId: "p2",
-                    purposeCode: "MARKETING_PROMO",
-                    purposeName: "Marketing & Promotional Offers",
-                    purposeDescription: "Send personalized discounts, travel recommendations, and loyalty rewards via email or SMS.",
+                    purposeCode: "PROMOTION_OFFERS",
+                    purposeName: "Promotion & Offers",
+                    purposeDescription: nil,
                     isMandatory: false,
                     alreadyGranted: false,
                     displayOrder: 2,
                     categories: [
-                        PurposeCategory(categoryId: "c3", categoryCode: "CONTACT_INFO", categoryName: "Contact Details", displayOrder: 1)
+                        PurposeCategory(categoryId: "c2", categoryCode: "DOB", categoryName: "DOB", displayOrder: 1),
+                        PurposeCategory(categoryId: "c3", categoryCode: "FULL_NAME", categoryName: "Full Name", displayOrder: 2),
+                        PurposeCategory(categoryId: "c4", categoryCode: "MOBILE_NO", categoryName: "Mobile No", displayOrder: 3)
                     ]
                 )
             ]
         )
 
-        let vc = ConsentViewController(notice: dummyNotice) { _ in }
+        let theme = NoticeTheme(
+            primaryColor: "#0052CC",
+            secondaryColor: "#10B981",
+            preferredMode: isDarkMode ? "dark" : "light"
+        )
+        let vc = ConsentViewController(notice: dummyNotice, theme: theme) { _ in }
         let nav = UINavigationController(rootViewController: vc)
+        nav.overrideUserInterfaceStyle = isDarkMode ? .dark : .light
         return nav
     }
 
@@ -764,9 +1155,13 @@ struct ConsentViewController_Preview: UIViewControllerRepresentable {
 }
 
 @available(iOS 17.0, *)
-#Preview {
-    ConsentViewController_Preview()
+#Preview("Light Mode") {
+    ConsentViewController_Preview(isDarkMode: false)
+}
+
+@available(iOS 17.0, *)
+#Preview("Dark Mode") {
+    ConsentViewController_Preview(isDarkMode: true)
+        .preferredColorScheme(.dark)
 }
 #endif
-
-

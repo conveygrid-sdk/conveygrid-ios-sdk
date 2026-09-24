@@ -10,7 +10,7 @@ final class MinorConsentFlow {
 
     @MainActor
     func run(noticeCode: String, identity: ConsentIdentity, presenter: UIViewController?) async throws -> ConsentResult {
-        let notice = try await api.fetchPublishedNotice(noticeCode: noticeCode, mobile: identity.mobile)
+        let notice = try await api.fetchPublishedNotice(noticeCode: noticeCode, identity: identity, mobile: identity.mobile)
         guard notice.supportsMinors == true else {
             throw SammatiSDKError.adultOnlyNotice
         }
@@ -53,6 +53,10 @@ final class MinorConsentFlow {
                 realtimeStatus: verification.status,
                 message: verification.message
             )
+        }
+
+        if mapped.allMandatoryGranted {
+            GrantedConsentStore.record(noticeCode: noticeCode, identity: identity)
         }
 
         if mapped.linkRequired {

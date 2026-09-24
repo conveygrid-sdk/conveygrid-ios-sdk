@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(UIKit)
+import UIKit
+#endif
 
 public struct ConsentIdentity: Codable, Sendable {
     public let sessionId: String
@@ -64,16 +67,30 @@ struct Notice: Codable, Sendable {
 
     enum CodingKeys: String, CodingKey {
         case noticeId = "notice_id"
+        case noticeIdCamel = "noticeId"
         case noticeCode = "notice_code"
+        case noticeCodeCamel = "noticeCode"
         case version
         case noticeName = "notice_name"
+        case noticeNameCamel = "noticeName"
         case introductionText = "introduction_text"
+        case introductionTextCamel = "introductionText"
         case footerText = "footer_text"
+        case footerTextCamel = "footerText"
         case rightsText = "rights_text"
+        case rightsTextCamel = "rightsText"
         case contactInformation = "contact_information"
+        case contactInformationCamel = "contactInformation"
         case showNotice = "show_notice"
+        case showNoticeCamel = "showNotice"
+        case showNoticeLower = "shownotice"
+        case showNoticeSnakeUpper = "show_Notice"
+        case isNoticeRequired = "is_notice_required"
+        case noticeRequired = "notice_required"
         case supportsMinors = "supports_minors"
+        case supportsMinorsCamel = "supportsMinors"
         case guardianVerificationMode = "guardian_verification_mode"
+        case guardianVerificationModeCamel = "guardianVerificationMode"
         case theme
         case purposes
         case message
@@ -113,20 +130,72 @@ struct Notice: Codable, Sendable {
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        noticeId = try container.decodeIfPresent(String.self, forKey: .noticeId)
-        noticeCode = try container.decodeIfPresent(String.self, forKey: .noticeCode)
-        version = try container.decodeIfPresent(String.self, forKey: .version)
-        noticeName = try container.decodeIfPresent(String.self, forKey: .noticeName)
-        introductionText = try container.decodeIfPresent(String.self, forKey: .introductionText)
-        footerText = try container.decodeIfPresent(String.self, forKey: .footerText)
-        rightsText = try container.decodeIfPresent(String.self, forKey: .rightsText)
-        contactInformation = try container.decodeIfPresent(String.self, forKey: .contactInformation)
-        showNotice = try container.decodeIfPresent(Bool.self, forKey: .showNotice)
-        supportsMinors = try container.decodeIfPresent(Bool.self, forKey: .supportsMinors)
-        guardianVerificationMode = try container.decodeIfPresent(String.self, forKey: .guardianVerificationMode)
-        theme = try container.decodeIfPresent(NoticeTheme.self, forKey: .theme)
-        message = try container.decodeIfPresent(String.self, forKey: .message)
-        purposes = (try container.decodeIfPresent([Purpose].self, forKey: .purposes)) ?? []
+        noticeId = (try? container.decodeIfPresent(String.self, forKey: .noticeId))
+            ?? (try? container.decodeIfPresent(String.self, forKey: .noticeIdCamel))
+        noticeCode = (try? container.decodeIfPresent(String.self, forKey: .noticeCode))
+            ?? (try? container.decodeIfPresent(String.self, forKey: .noticeCodeCamel))
+        version = try? container.decodeIfPresent(String.self, forKey: .version)
+        noticeName = (try? container.decodeIfPresent(String.self, forKey: .noticeName))
+            ?? (try? container.decodeIfPresent(String.self, forKey: .noticeNameCamel))
+        introductionText = (try? container.decodeIfPresent(String.self, forKey: .introductionText))
+            ?? (try? container.decodeIfPresent(String.self, forKey: .introductionTextCamel))
+        footerText = (try? container.decodeIfPresent(String.self, forKey: .footerText))
+            ?? (try? container.decodeIfPresent(String.self, forKey: .footerTextCamel))
+        rightsText = (try? container.decodeIfPresent(String.self, forKey: .rightsText))
+            ?? (try? container.decodeIfPresent(String.self, forKey: .rightsTextCamel))
+        contactInformation = (try? container.decodeIfPresent(String.self, forKey: .contactInformation))
+            ?? (try? container.decodeIfPresent(String.self, forKey: .contactInformationCamel))
+        showNotice = container.decodeFlexibleBool(forKeys: [
+            .showNotice,
+            .showNoticeCamel,
+            .showNoticeLower,
+            .showNoticeSnakeUpper,
+            .isNoticeRequired,
+            .noticeRequired
+        ])
+        supportsMinors = container.decodeFlexibleBool(forKeys: [.supportsMinors, .supportsMinorsCamel])
+        guardianVerificationMode = (try? container.decodeIfPresent(String.self, forKey: .guardianVerificationMode))
+            ?? (try? container.decodeIfPresent(String.self, forKey: .guardianVerificationModeCamel))
+        theme = try? container.decodeIfPresent(NoticeTheme.self, forKey: .theme)
+        message = try? container.decodeIfPresent(String.self, forKey: .message)
+        purposes = (try? container.decodeIfPresent([Purpose].self, forKey: .purposes)) ?? []
+    }
+
+    func withShowNotice(_ show: Bool?, message: String? = nil) -> Notice {
+        Notice(
+            noticeId: self.noticeId,
+            noticeCode: self.noticeCode,
+            version: self.version,
+            noticeName: self.noticeName,
+            introductionText: self.introductionText,
+            footerText: self.footerText,
+            rightsText: self.rightsText,
+            contactInformation: self.contactInformation,
+            showNotice: show ?? self.showNotice,
+            supportsMinors: self.supportsMinors,
+            guardianVerificationMode: self.guardianVerificationMode,
+            theme: self.theme,
+            message: message ?? self.message,
+            purposes: self.purposes
+        )
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encodeIfPresent(noticeId, forKey: .noticeId)
+        try container.encodeIfPresent(noticeCode, forKey: .noticeCode)
+        try container.encodeIfPresent(version, forKey: .version)
+        try container.encodeIfPresent(noticeName, forKey: .noticeName)
+        try container.encodeIfPresent(introductionText, forKey: .introductionText)
+        try container.encodeIfPresent(footerText, forKey: .footerText)
+        try container.encodeIfPresent(rightsText, forKey: .rightsText)
+        try container.encodeIfPresent(contactInformation, forKey: .contactInformation)
+        try container.encodeIfPresent(showNotice, forKey: .showNotice)
+        try container.encodeIfPresent(supportsMinors, forKey: .supportsMinors)
+        try container.encodeIfPresent(guardianVerificationMode, forKey: .guardianVerificationMode)
+        try container.encodeIfPresent(theme, forKey: .theme)
+        try container.encodeIfPresent(message, forKey: .message)
+        try container.encode(purposes, forKey: .purposes)
     }
 }
 
@@ -137,6 +206,7 @@ public struct NoticeTheme: Codable, Sendable {
     public let secondaryColor: String?
     public let fontFamily: String?
     public let logoURL: String?
+    public let preferredMode: String?
 
     public init(
         themeId: String? = nil,
@@ -144,7 +214,8 @@ public struct NoticeTheme: Codable, Sendable {
         primaryColor: String? = nil,
         secondaryColor: String? = nil,
         fontFamily: String? = nil,
-        logoURL: String? = nil
+        logoURL: String? = nil,
+        preferredMode: String? = nil
     ) {
         self.themeId = themeId
         self.themeName = themeName
@@ -152,7 +223,44 @@ public struct NoticeTheme: Codable, Sendable {
         self.secondaryColor = secondaryColor
         self.fontFamily = fontFamily
         self.logoURL = logoURL
+        self.preferredMode = preferredMode
     }
+
+#if canImport(UIKit)
+    public init(
+        themeId: String? = nil,
+        themeName: String? = nil,
+        primaryColor: String? = nil,
+        secondaryColor: String? = nil,
+        fontFamily: String? = nil,
+        logoURL: String? = nil,
+        interfaceStyle: UIUserInterfaceStyle
+    ) {
+        let modeString: String
+        switch interfaceStyle {
+        case .light: modeString = "light"
+        case .dark: modeString = "dark"
+        default: modeString = "system"
+        }
+        self.init(
+            themeId: themeId,
+            themeName: themeName,
+            primaryColor: primaryColor,
+            secondaryColor: secondaryColor,
+            fontFamily: fontFamily,
+            logoURL: logoURL,
+            preferredMode: modeString
+        )
+    }
+
+    public var interfaceStyle: UIUserInterfaceStyle {
+        switch preferredMode?.lowercased() {
+        case "light": return .light
+        case "dark": return .dark
+        default: return .unspecified
+        }
+    }
+#endif
 
     enum CodingKeys: String, CodingKey {
         case themeId = "theme_id"
@@ -161,6 +269,7 @@ public struct NoticeTheme: Codable, Sendable {
         case secondaryColor = "secondary_color"
         case fontFamily = "font_family"
         case logoURL = "logo_url"
+        case preferredMode = "preferred_mode"
     }
 
     public func merged(with fallback: NoticeTheme?) -> NoticeTheme {
@@ -171,7 +280,8 @@ public struct NoticeTheme: Codable, Sendable {
             primaryColor: self.primaryColor ?? fallback.primaryColor,
             secondaryColor: self.secondaryColor ?? fallback.secondaryColor,
             fontFamily: self.fontFamily ?? fallback.fontFamily,
-            logoURL: self.logoURL ?? fallback.logoURL
+            logoURL: self.logoURL ?? fallback.logoURL,
+            preferredMode: self.preferredMode ?? fallback.preferredMode
         )
     }
 }
@@ -189,13 +299,27 @@ struct Purpose: Codable, Sendable {
 
     enum CodingKeys: String, CodingKey {
         case purposeId = "purpose_id"
+        case purposeIdCamel = "purposeId"
         case purposeCode = "purpose_code"
+        case purposeCodeCamel = "purposeCode"
         case purposeName = "purpose_name"
+        case purposeNameCamel = "purposeName"
         case purposeDescription = "purpose_description"
+        case purposeDescriptionCamel = "purposeDescription"
         case isMandatory = "is_mandatory"
+        case isMandatoryCamel = "isMandatory"
         case purposeIsMandatory = "purpose_is_mandatory"
         case alreadyGranted = "already_granted"
+        case alreadyGrantedCamel = "alreadyGranted"
+        case alreadyGrantedLower = "alreadygranted"
+        case isGranted = "is_granted"
+        case isGrantedCamel = "isGranted"
+        case isGrantedLower = "isgranted"
+        case granted
+        case consented
+        case isConsented = "is_consented"
         case displayOrder = "display_order"
+        case displayOrderCamel = "displayOrder"
         case categories
     }
 
@@ -223,15 +347,42 @@ struct Purpose: Codable, Sendable {
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        purposeId = try container.decodeIfPresent(String.self, forKey: .purposeId)
-        purposeCode = try container.decodeIfPresent(String.self, forKey: .purposeCode)
-        purposeName = try container.decodeIfPresent(String.self, forKey: .purposeName)
-        purposeDescription = try container.decodeIfPresent(String.self, forKey: .purposeDescription)
-        isMandatory = try container.decodeIfPresent(Bool.self, forKey: .isMandatory)
-        purposeIsMandatory = try container.decodeIfPresent(Bool.self, forKey: .purposeIsMandatory)
-        alreadyGranted = try container.decodeIfPresent(Bool.self, forKey: .alreadyGranted)
-        displayOrder = try container.decodeIfPresent(Int.self, forKey: .displayOrder)
-        categories = (try container.decodeIfPresent([PurposeCategory].self, forKey: .categories)) ?? []
+        purposeId = (try? container.decodeIfPresent(String.self, forKey: .purposeId))
+            ?? (try? container.decodeIfPresent(String.self, forKey: .purposeIdCamel))
+        purposeCode = (try? container.decodeIfPresent(String.self, forKey: .purposeCode))
+            ?? (try? container.decodeIfPresent(String.self, forKey: .purposeCodeCamel))
+        purposeName = (try? container.decodeIfPresent(String.self, forKey: .purposeName))
+            ?? (try? container.decodeIfPresent(String.self, forKey: .purposeNameCamel))
+        purposeDescription = (try? container.decodeIfPresent(String.self, forKey: .purposeDescription))
+            ?? (try? container.decodeIfPresent(String.self, forKey: .purposeDescriptionCamel))
+        isMandatory = container.decodeFlexibleBool(forKeys: [.isMandatory, .isMandatoryCamel, .purposeIsMandatory])
+        purposeIsMandatory = isMandatory
+        alreadyGranted = container.decodeFlexibleBool(forKeys: [
+            .alreadyGranted,
+            .alreadyGrantedCamel,
+            .alreadyGrantedLower,
+            .isGranted,
+            .isGrantedCamel,
+            .isGrantedLower,
+            .granted,
+            .consented,
+            .isConsented
+        ])
+        displayOrder = (try? container.decodeIfPresent(Int.self, forKey: .displayOrder))
+            ?? (try? container.decodeIfPresent(Int.self, forKey: .displayOrderCamel))
+        categories = (try? container.decodeIfPresent([PurposeCategory].self, forKey: .categories)) ?? []
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encodeIfPresent(purposeId, forKey: .purposeId)
+        try container.encodeIfPresent(purposeCode, forKey: .purposeCode)
+        try container.encodeIfPresent(purposeName, forKey: .purposeName)
+        try container.encodeIfPresent(purposeDescription, forKey: .purposeDescription)
+        try container.encodeIfPresent(isMandatory, forKey: .isMandatory)
+        try container.encodeIfPresent(alreadyGranted, forKey: .alreadyGranted)
+        try container.encodeIfPresent(displayOrder, forKey: .displayOrder)
+        try container.encode(categories, forKey: .categories)
     }
 
     var mandatory: Bool { isMandatory ?? purposeIsMandatory ?? false }
@@ -310,5 +461,35 @@ struct APIEnvelope<T: Decodable>: Decodable {
     let success: Bool?
     let data: T?
     let message: String?
+    let showNotice: Bool?
     let errors: [APIErrorDetail]?
+
+    enum CodingKeys: String, CodingKey {
+        case success
+        case data
+        case message
+        case showNotice = "show_notice"
+        case showNoticeCamel = "showNotice"
+        case showNoticeLower = "shownotice"
+        case showNoticeSnakeUpper = "show_Notice"
+        case isNoticeRequired = "is_notice_required"
+        case noticeRequired = "notice_required"
+        case errors
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        success = try? container.decodeIfPresent(Bool.self, forKey: .success)
+        data = try? container.decodeIfPresent(T.self, forKey: .data)
+        message = try? container.decodeIfPresent(String.self, forKey: .message)
+        showNotice = container.decodeFlexibleBool(forKeys: [
+            .showNotice,
+            .showNoticeCamel,
+            .showNoticeLower,
+            .showNoticeSnakeUpper,
+            .isNoticeRequired,
+            .noticeRequired
+        ])
+        errors = try? container.decodeIfPresent([APIErrorDetail].self, forKey: .errors)
+    }
 }
