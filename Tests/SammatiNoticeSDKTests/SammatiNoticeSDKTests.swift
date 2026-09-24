@@ -536,5 +536,77 @@ final class SammatiNoticeSDKTests: XCTestCase {
             durationMs: 145.2
         )
     }
+
+    func testPublicConsentLinkTokenExtraction() {
+        let token = "zF3xziMkTbT6hz0BqLoBJSgq8CXJ5m0WbALMHTtQ9HxAZ02cFio54RwMFnBjTLtc"
+        let fullApiUrl = "https://conveygridapidev.rysun.in/api/v1/public/consent/link/zF3xziMkTbT6hz0BqLoBJSgq8CXJ5m0WbALMHTtQ9HxAZ02cFio54RwMFnBjTLtc"
+        let queryUrl = "https://demo.conveygrid.com/consent/link?token=zF3xziMkTbT6hz0BqLoBJSgq8CXJ5m0WbALMHTtQ9HxAZ02cFio54RwMFnBjTLtc"
+
+        // 1. Full URL via consentLink
+        let opt1 = ConsentOptions(consentLink: fullApiUrl)
+        XCTAssertEqual(opt1.resolvedLinkToken, token)
+
+        // 2. Query URL via consentLink
+        let opt2 = ConsentOptions(consentLink: queryUrl)
+        XCTAssertEqual(opt2.resolvedLinkToken, token)
+
+        // 3. Raw token passed as consentLink
+        let opt3 = ConsentOptions(consentLink: token)
+        XCTAssertEqual(opt3.resolvedLinkToken, token)
+
+        // 4. Full URL passed as noticeCode (auto-detected)
+        let opt4 = ConsentOptions(noticeCode: fullApiUrl)
+        XCTAssertEqual(opt4.resolvedLinkToken, token)
+
+        // 5. Raw token passed as noticeCode (auto-detected)
+        let opt5 = ConsentOptions(noticeCode: token)
+        XCTAssertEqual(opt5.resolvedLinkToken, token)
+
+        // 6. Standard noticeCode (should not be treated as link token)
+        let opt6 = ConsentOptions(noticeCode: "PRIVACY_POLICY")
+        XCTAssertNil(opt6.resolvedLinkToken)
+    }
+
+    func testPublicConsentLinkNestedNoticeParsing() throws {
+        let json = """
+        {
+            "success": true,
+            "message": "Public consent request processed successfully",
+            "data": {
+                "linkId": "0d9cd496-1abf-4616-9ea1-3ad57a70707b",
+                "noticeId": "814027b8-f863-4a09-a5e2-a947c25489aa",
+                "noticeVersion": "1.0",
+                "status": "active",
+                "expiresAt": "2027-09-18T11:51:41.805398+00:00",
+                "notice": {
+                    "notice_id": "814027b8-f863-4a09-a5e2-a947c25489aa",
+                    "notice_code": "NOTICE_1",
+                    "show_notice": false,
+                    "message": "Consent has already been provided for all requested purposes.",
+                    "already_granted_purpose_ids": [
+                        "683a2b61-1e03-4644-9972-a34ff4f37362"
+                    ],
+                    "purposes": [
+                        {
+                            "purpose_id": "683a2b61-1e03-4644-9972-a34ff4f37362",
+                            "purpose_code": "PROMO",
+                            "is_mandatory": true,
+                            "already_granted": true
+                        }
+                    ]
+                }
+            }
+        }
+        """.data(using: .utf8)!
+
+        let client = APIClient(configuration: SammatiConfiguration(clientId: "client", origin: "https://example.com"))
+        let notice = try client.parsePublishedNotice(from: json)
+
+        XCTAssertEqual(notice.noticeId, "814027b8-f863-4a09-a5e2-a947c25489aa")
+        XCTAssertEqual(notice.showNotice, false)
+        XCTAssertEqual(notice.message, "Consent has already been provided for all requested purposes.")
+        XCTAssertEqual(notice.purposes.count, 1)
+        XCTAssertEqual(notice.purposes[0].purposeCode, "PROMO")
+    }
 }
 

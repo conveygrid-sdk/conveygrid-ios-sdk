@@ -64,6 +64,7 @@ struct Notice: Codable, Sendable {
     let theme: NoticeTheme?
     let message: String?
     let purposes: [Purpose]
+    var linkToken: String?
 
     enum CodingKeys: String, CodingKey {
         case noticeId = "notice_id"
@@ -110,7 +111,8 @@ struct Notice: Codable, Sendable {
         guardianVerificationMode: String? = nil,
         theme: NoticeTheme? = nil,
         message: String? = nil,
-        purposes: [Purpose] = []
+        purposes: [Purpose] = [],
+        linkToken: String? = nil
     ) {
         self.noticeId = noticeId
         self.noticeCode = noticeCode
@@ -126,6 +128,7 @@ struct Notice: Codable, Sendable {
         self.theme = theme
         self.message = message
         self.purposes = purposes
+        self.linkToken = linkToken
     }
 
     init(from decoder: Decoder) throws {
@@ -159,6 +162,7 @@ struct Notice: Codable, Sendable {
         theme = try? container.decodeIfPresent(NoticeTheme.self, forKey: .theme)
         message = try? container.decodeIfPresent(String.self, forKey: .message)
         purposes = (try? container.decodeIfPresent([Purpose].self, forKey: .purposes)) ?? []
+        linkToken = nil
     }
 
     func withShowNotice(_ show: Bool?, message: String? = nil) -> Notice {
@@ -176,7 +180,8 @@ struct Notice: Codable, Sendable {
             guardianVerificationMode: self.guardianVerificationMode,
             theme: self.theme,
             message: message ?? self.message,
-            purposes: self.purposes
+            purposes: self.purposes,
+            linkToken: self.linkToken
         )
     }
 

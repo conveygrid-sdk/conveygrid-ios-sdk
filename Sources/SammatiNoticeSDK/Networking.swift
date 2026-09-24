@@ -173,16 +173,124 @@ final class APIClient {
         if rawShowNotice == nil {
             rawShowNotice = extractBool(from: dataDict)
         }
+        let noticeDict = dataDict?["notice"] as? [String: Any]
+        if rawShowNotice == nil {
+            rawShowNotice = extractBool(from: noticeDict)
+        }
+
+        var noticeData = data
+        if let noticeDict, let nestedData = try? JSONSerialization.data(withJSONObject: noticeDict) {
+            noticeData = nestedData
+        }
 
         let envelope = try? decoder.decode(APIEnvelope<Notice>.self, from: data)
-        var notice = envelope?.data ?? (try? decoder.decode(Notice.self, from: data)) ?? Notice()
+        var notice = envelope?.data ?? (try? decoder.decode(Notice.self, from: noticeData)) ?? (try? decoder.decode(Notice.self, from: data)) ?? Notice()
 
         let resolvedShow = rawShowNotice ?? envelope?.showNotice ?? notice.showNotice
-        let resolvedMessage = envelope?.message ?? notice.message
+        let resolvedMessage = (noticeDict?["message"] as? String) ?? envelope?.message ?? notice.message
 
         SammatiLogger.debug("📋 Parsed Published Notice: noticeCode=\(notice.noticeCode ?? "nil"), showNotice=\(String(describing: resolvedShow)) (raw=\(String(describing: rawShowNotice)), envelope=\(String(describing: envelope?.showNotice))), purposes=\(notice.purposes.count), message=\(resolvedMessage ?? "nil")")
 
         return notice.withShowNotice(resolvedShow, message: resolvedMessage)
+    }
+
+    private struct LinkValidatePayload: Encodable {
+        let mobile: String?
+        let email: String?
+    }
+
+    func validateConsentLink(
+        token: String,
+        mobile: String? = nil,
+        email: String? = nil
+    ) async throws -> Notice {
+        let safeToken = token.trimmingCharacters(in: .whitespacesAndNewlines)
+        let path = "/api/v1/public/consent/link/\(safeToken)"
+
+        let rawMobile = mobile?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleanMobile: String?
+        if let rawMobile, !rawMobile.isEmpty {
+            let digitsOnly = rawMobile.filter(\.isNumber)
+            cleanMobile = !digitsOnly.isEmpty ? digitsOnly : rawMobile
+        } else {
+            cleanMobile = nil
+        }
+
+        let cleanEmail = email?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+
+        let bodyData: Data?
+        if cleanMobile != nil || (cleanEmail != nil && !cleanEmail!.isEmpty) {
+            let payload = LinkValidatePayload(mobile: cleanMobile, email: cleanEmail)
+            bodyData = try? encoder.encode(payload)
+        } else {
+            bodyData = nil
+        }
+
+        let method = bodyData != nil ? "POST" : "GET"
+        let data = try await requestRawData(path: path, method: method, body: bodyData)
+        var notice = try parsePublishedNotice(from: data)
+        notice.linkToken = safeToken
+        return notice
+    }
+
+    func submitConsentLink(
+        token: String,
+        notice: Notice,
+        choices: [ConsentChoice],
+        identity: ConsentIdentity,
+        language: String
+    ) async throws -> SubmitResponse {
+        let subject: SubmitSubject? = identity.subjectRef != nil ? nil : SubmitSubject(
+            sessionId: identity.sessionId,
+            referenceId: identity.referenceId,
+            email: identity.email,
+            mobile: identity.mobile,
+            fullName: identity.fullName
+        )
+
+        let dp: SubmitDataPrincipal?
+        if let dob = identity.dateOfBirth?.trimmingCharacters(in: .whitespacesAndNewlines), !dob.isEmpty {
+            dp = SubmitDataPrincipal(
+                dateOfBirth: dob,
+                fullName: identity.fullName?.isEmpty == false ? identity.fullName : nil,
+                email: identity.email?.isEmpty == false ? identity.email?.lowercased() : nil,
+                mobile: identity.mobile?.isEmpty == false ? identity.mobile?.filter(\.isNumber) : nil,
+                preferredLanguage: language
+            )
+        } else {
+            dp = nil
+        }
+
+        let guardian: SubmitGuardian?
+        if let g = identity.guardian {
+            guardian = SubmitGuardian(
+                guardianName: g.guardianName,
+                guardianEmail: g.guardianEmail?.lowercased(),
+                guardianMobile: g.guardianMobile?.filter(\.isNumber),
+                relationshipCode: g.relationshipCode?.uppercased(),
+                relationshipId: g.relationshipId
+            )
+        } else {
+            guardian = nil
+        }
+
+        let submitChoices = choices.map { SubmitChoice(purposeId: $0.purposeId, granted: $0.granted) }
+
+        let req = SubmitRequest(
+            noticeId: notice.noticeId,
+            version: notice.version,
+            choices: submitChoices,
+            language: language,
+            pageUrl: nil,
+            subject: subject,
+            subjectRef: identity.subjectRef,
+            dataPrincipal: dp,
+            guardian: guardian
+        )
+
+        let data = try encoder.encode(req)
+        let safeToken = token.trimmingCharacters(in: .whitespacesAndNewlines)
+        return try await request(path: "/api/v1/public/consent/link/\(safeToken)/submit", method: "POST", body: data)
     }
 
     func fetchPublishedNotice(
