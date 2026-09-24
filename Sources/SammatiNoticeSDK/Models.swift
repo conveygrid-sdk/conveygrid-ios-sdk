@@ -185,6 +185,52 @@ struct Notice: Codable, Sendable {
         )
     }
 
+    func withPurposes(_ purposes: [Purpose]) -> Notice {
+        Notice(
+            noticeId: self.noticeId,
+            noticeCode: self.noticeCode,
+            version: self.version,
+            noticeName: self.noticeName,
+            introductionText: self.introductionText,
+            footerText: self.footerText,
+            rightsText: self.rightsText,
+            contactInformation: self.contactInformation,
+            showNotice: self.showNotice,
+            supportsMinors: self.supportsMinors,
+            guardianVerificationMode: self.guardianVerificationMode,
+            theme: self.theme,
+            message: self.message,
+            purposes: purposes,
+            linkToken: self.linkToken
+        )
+    }
+
+    func withDetails(
+        noticeId: String? = nil,
+        version: String? = nil,
+        showNotice: Bool? = nil,
+        message: String? = nil,
+        theme: NoticeTheme? = nil
+    ) -> Notice {
+        Notice(
+            noticeId: noticeId ?? self.noticeId,
+            noticeCode: self.noticeCode,
+            version: version ?? self.version,
+            noticeName: self.noticeName,
+            introductionText: self.introductionText,
+            footerText: self.footerText,
+            rightsText: self.rightsText,
+            contactInformation: self.contactInformation,
+            showNotice: showNotice ?? self.showNotice,
+            supportsMinors: self.supportsMinors,
+            guardianVerificationMode: self.guardianVerificationMode,
+            theme: theme ?? self.theme,
+            message: message ?? self.message,
+            purposes: self.purposes,
+            linkToken: self.linkToken
+        )
+    }
+
     func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encodeIfPresent(noticeId, forKey: .noticeId)

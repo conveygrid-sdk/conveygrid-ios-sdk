@@ -178,20 +178,67 @@ final class APIClient {
             rawShowNotice = extractBool(from: noticeDict)
         }
 
-        var noticeData = data
-        if let noticeDict, let nestedData = try? JSONSerialization.data(withJSONObject: noticeDict) {
-            noticeData = nestedData
+        let envelope = try? decoder.decode(APIEnvelope<Notice>.self, from: data)
+        let notice: Notice
+        if let noticeDict {
+            do {
+                let nestedData = try JSONSerialization.data(withJSONObject: noticeDict)
+                var nestedNotice = try decoder.decode(Notice.self, from: nestedData)
+                let fallbackNoticeId = (dataDict?["noticeId"] as? String) ?? (dataDict?["notice_id"] as? String)
+                let fallbackVersion = (dataDict?["noticeVersion"] as? String) ?? (dataDict?["notice_version"] as? String)
+                var fallbackTheme: NoticeTheme? = nil
+                if nestedNotice.theme == nil, let themeDict = dataDict?["theme"] as? [String: Any],
+                   let themeData = try? JSONSerialization.data(withJSONObject: themeDict),
+                   let decodedTheme = try? decoder.decode(NoticeTheme.self, from: themeData) {
+                    fallbackTheme = decodedTheme
+                }
+                nestedNotice = nestedNotice.withDetails(
+                    noticeId: fallbackNoticeId,
+                    version: fallbackVersion,
+                    theme: fallbackTheme
+                )
+                notice = nestedNotice
+            } catch {
+                SammatiLogger.error("Failed to decode nested notice: \(error)")
+                notice = envelope?.data ?? (try? decoder.decode(Notice.self, from: data)) ?? Notice()
+            }
+        } else {
+            notice = envelope?.data ?? (try? decoder.decode(Notice.self, from: data)) ?? Notice()
         }
 
-        let envelope = try? decoder.decode(APIEnvelope<Notice>.self, from: data)
-        var notice = envelope?.data ?? (try? decoder.decode(Notice.self, from: noticeData)) ?? (try? decoder.decode(Notice.self, from: data)) ?? Notice()
-
         let resolvedShow = rawShowNotice ?? envelope?.showNotice ?? notice.showNotice
-        let resolvedMessage = (noticeDict?["message"] as? String) ?? envelope?.message ?? notice.message
+        let resolvedMessage = (noticeDict?["message"] as? String)
+            ?? (dataDict?["message"] as? String)
+            ?? envelope?.message
+            ?? notice.message
 
-        SammatiLogger.debug("📋 Parsed Published Notice: noticeCode=\(notice.noticeCode ?? "nil"), showNotice=\(String(describing: resolvedShow)) (raw=\(String(describing: rawShowNotice)), envelope=\(String(describing: envelope?.showNotice))), purposes=\(notice.purposes.count), message=\(resolvedMessage ?? "nil")")
+        let grantedIds = ((dataDict?["already_granted_purpose_ids"] as? [String])
+            ?? (noticeDict?["already_granted_purpose_ids"] as? [String])
+            ?? []).map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
 
-        return notice.withShowNotice(resolvedShow, message: resolvedMessage)
+        var finalPurposes = notice.purposes
+        if !grantedIds.isEmpty && !finalPurposes.isEmpty {
+            finalPurposes = finalPurposes.map { p in
+                if let pid = p.purposeId?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(), grantedIds.contains(pid) {
+                    return Purpose(
+                        purposeId: p.purposeId,
+                        purposeCode: p.purposeCode,
+                        purposeName: p.purposeName,
+                        purposeDescription: p.purposeDescription,
+                        isMandatory: p.isMandatory,
+                        purposeIsMandatory: p.purposeIsMandatory,
+                        alreadyGranted: true,
+                        displayOrder: p.displayOrder,
+                        categories: p.categories
+                    )
+                }
+                return p
+            }
+        }
+
+        SammatiLogger.debug("📋 Parsed Published Notice: noticeCode=\(notice.noticeCode ?? "nil"), showNotice=\(String(describing: resolvedShow)) (raw=\(String(describing: rawShowNotice)), envelope=\(String(describing: envelope?.showNotice))), purposes=\(finalPurposes.count), alreadyGrantedCount=\(finalPurposes.filter { $0.granted }.count), message=\(resolvedMessage ?? "nil")")
+
+        return notice.withShowNotice(resolvedShow, message: resolvedMessage).withPurposes(finalPurposes)
     }
 
     private struct LinkValidatePayload: Encodable {
@@ -293,6 +340,24 @@ final class APIClient {
         return try await request(path: "/api/v1/public/consent/link/\(safeToken)/submit", method: "POST", body: data)
     }
 
+    private struct NoticeFetchPayload: Encodable {
+        let mobile: String?
+        let email: String?
+        let sessionId: String?
+        let referenceId: String?
+        let subjectRef: String?
+        let fullName: String?
+
+        enum CodingKeys: String, CodingKey {
+            case mobile
+            case email
+            case sessionId = "session_id"
+            case referenceId = "reference_id"
+            case subjectRef = "subject_ref"
+            case fullName = "full_name"
+        }
+    }
+
     func fetchPublishedNotice(
         noticeCode: String,
         identity: ConsentIdentity? = nil,
@@ -302,49 +367,59 @@ final class APIClient {
         let safeNoticeCode = noticeCode.addingPercentEncoding(withAllowedCharacters: safeChars) ?? noticeCode
         let basePath = "/api/v1/public/consent/notices/\(safeNoticeCode)/published"
 
-        var queryItems: [URLQueryItem] = []
         let rawMobile = (identity?.mobile ?? mobile)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleanMobile: String?
         if let rawMobile, !rawMobile.isEmpty {
             let digitsOnly = rawMobile.filter(\.isNumber)
-            let mobileToSend = !digitsOnly.isEmpty ? digitsOnly : rawMobile
-            queryItems.append(URLQueryItem(name: "mobile", value: mobileToSend))
-        }
-        if let email = identity?.email?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(), !email.isEmpty {
-            queryItems.append(URLQueryItem(name: "email", value: email))
-        }
-        if let ref = identity?.referenceId?.trimmingCharacters(in: .whitespacesAndNewlines), !ref.isEmpty {
-            queryItems.append(URLQueryItem(name: "reference_id", value: ref))
-        }
-        if let sub = identity?.subjectRef?.trimmingCharacters(in: .whitespacesAndNewlines), !sub.isEmpty {
-            queryItems.append(URLQueryItem(name: "subject_ref", value: sub))
-        }
-        let sess = identity?.sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
-        if let sess, !sess.isEmpty {
-            queryItems.append(URLQueryItem(name: "session_id", value: sess))
-        }
-
-        let fullPath: String
-        if !queryItems.isEmpty {
-            var components = URLComponents()
-            components.queryItems = queryItems
-            let queryString = components.percentEncodedQuery ?? ""
-            fullPath = queryString.isEmpty ? basePath : "\(basePath)?\(queryString)"
+            cleanMobile = !digitsOnly.isEmpty ? digitsOnly : rawMobile
         } else {
-            fullPath = basePath
+            cleanMobile = nil
         }
 
-        let data = try await requestRawData(path: fullPath)
+        let cleanEmail = identity?.email?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let cleanSessionId = identity?.sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleanRef = identity?.referenceId?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleanSub = identity?.subjectRef?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleanName = identity?.fullName?.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        let bodyData: Data?
+        if cleanMobile != nil || (cleanEmail != nil && !cleanEmail!.isEmpty) {
+            let payload = NoticeFetchPayload(
+                mobile: cleanMobile,
+                email: cleanEmail?.isEmpty == false ? cleanEmail : nil,
+                sessionId: cleanSessionId?.isEmpty == false ? cleanSessionId : nil,
+                referenceId: cleanRef?.isEmpty == false ? cleanRef : nil,
+                subjectRef: cleanSub?.isEmpty == false ? cleanSub : nil,
+                fullName: cleanName?.isEmpty == false ? cleanName : nil
+            )
+            bodyData = try? encoder.encode(payload)
+        } else {
+            bodyData = nil
+        }
+
+        let method = bodyData != nil ? "POST" : "GET"
+        let data = try await requestRawData(path: basePath, method: method, body: bodyData)
         return try parsePublishedNotice(from: data)
     }
 
     func validate(identity: ConsentIdentity, purposeCode: String, noticeCode: String?) async throws -> ConsentValidation {
+        let cleanEmail = identity.email?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let rawMobile = identity.mobile?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleanMobile: String?
+        if let rawMobile, !rawMobile.isEmpty {
+            let digitsOnly = rawMobile.filter(\.isNumber)
+            cleanMobile = !digitsOnly.isEmpty ? digitsOnly : rawMobile
+        } else {
+            cleanMobile = nil
+        }
+
         let req = ValidateRequest(
             purposeCode: purposeCode,
             noticeCode: noticeCode,
             referenceId: identity.referenceId,
             sessionId: identity.sessionId,
-            email: identity.email,
-            mobile: identity.mobile,
+            email: cleanEmail?.isEmpty == false ? cleanEmail : nil,
+            mobile: cleanMobile,
             subjectRef: identity.subjectRef
         )
         let data = try encoder.encode(req)

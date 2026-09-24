@@ -137,6 +137,7 @@ public struct Guardian: Codable, Sendable {
 public struct ConsentOptions: Sendable {
     public let noticeCode: String?
     public let consentLink: String?
+    public let linkToken: String?
     public let email: String?
     public let mobile: String?
     public let fullName: String?
@@ -155,6 +156,7 @@ public struct ConsentOptions: Sendable {
     public init(
         noticeCode: String? = nil,
         consentLink: String? = nil,
+        linkToken: String? = nil,
         email: String? = nil,
         mobile: String? = nil,
         fullName: String? = nil,
@@ -170,10 +172,25 @@ public struct ConsentOptions: Sendable {
         skipIfValid: Bool = true,
         theme: NoticeTheme? = nil
     ) {
+        let effectiveLink = consentLink ?? linkToken
+        var resolvedEmail = email
+        var resolvedMobile = mobile
+        if let linkCandidate = effectiveLink ?? (noticeCode != nil && ConsentOptions.isLinkOrToken(noticeCode!) ? noticeCode : nil),
+           let url = URL(string: linkCandidate),
+           let components = URLComponents(url: url, resolvingAgainstBaseURL: false) {
+            if resolvedEmail == nil {
+                resolvedEmail = components.queryItems?.first(where: { $0.name.lowercased() == "email" })?.value
+            }
+            if resolvedMobile == nil {
+                resolvedMobile = components.queryItems?.first(where: { $0.name.lowercased() == "mobile" || $0.name.lowercased() == "phone" })?.value
+            }
+        }
+
         self.noticeCode = noticeCode
         self.consentLink = consentLink
-        self.email = email
-        self.mobile = mobile
+        self.linkToken = linkToken
+        self.email = resolvedEmail
+        self.mobile = resolvedMobile
         self.fullName = fullName
         self.dateOfBirth = dateOfBirth
         self.guardian = guardian
@@ -207,6 +224,7 @@ public struct ConsentOptions: Sendable {
         self.init(
             noticeCode: nil,
             consentLink: consentLink,
+            linkToken: nil,
             email: email,
             mobile: mobile,
             fullName: fullName,
@@ -224,6 +242,9 @@ public struct ConsentOptions: Sendable {
 
     /// Resolves the link token if options provide a public consent link or long token string
     public var resolvedLinkToken: String? {
+        if let linkToken, !linkToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return ConsentOptions.extractToken(from: linkToken)
+        }
         if let consentLink, !consentLink.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return ConsentOptions.extractToken(from: consentLink)
         }
@@ -236,7 +257,7 @@ public struct ConsentOptions: Sendable {
     public static func isLinkOrToken(_ string: String) -> Bool {
         let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.hasPrefix("http://") || trimmed.hasPrefix("https://") {
-            return trimmed.contains("/consent/link") || trimmed.contains("token=")
+            return trimmed.contains("/consent/link") || trimmed.contains("/public/consent/link") || trimmed.contains("token=")
         }
         if trimmed.count >= 40 && !trimmed.contains(" ") && !trimmed.contains("/") {
             return true
@@ -449,6 +470,58 @@ public final class SammatiNotice {
         try await shared.validate(identity: identity, purposeCode: purposeCode, noticeCode: noticeCode)
     }
 
+    /// Checks whether consent has already been provided for a given notice and identity,
+    /// checking local cache, notice state, and the server validate API.
+    public static func isConsentGiven(
+        noticeCode: String,
+        email: String? = nil,
+        mobile: String? = nil,
+        referenceId: String? = nil
+    ) async throws -> Bool {
+        let identity = ConsentIdentity(
+            sessionId: shared.session.sessionId,
+            referenceId: referenceId,
+            email: email,
+            mobile: mobile
+        )
+        let config = try shared.validatedConfiguration()
+        let api = APIClient(configuration: config)
+
+        if GrantedConsentStore.isGranted(noticeCode: noticeCode, identity: identity) {
+            return true
+        }
+
+        let notice = try await api.fetchPublishedNotice(noticeCode: noticeCode, identity: identity, mobile: mobile)
+        if notice.showNotice == false {
+            GrantedConsentStore.record(noticeCode: noticeCode, identity: identity)
+            return true
+        }
+
+        let mandatory = notice.purposes.filter { $0.mandatory }
+        let purposesToCheck = mandatory.isEmpty ? notice.purposes : mandatory
+        if !purposesToCheck.isEmpty && purposesToCheck.allSatisfy({ $0.granted }) {
+            GrantedConsentStore.record(noticeCode: noticeCode, identity: identity)
+            return true
+        }
+
+        let codesToCheck = purposesToCheck.compactMap { $0.purposeCode }.filter { !$0.isEmpty }
+        guard !codesToCheck.isEmpty else { return false }
+
+        for code in codesToCheck {
+            do {
+                let v = try await api.validate(identity: identity, purposeCode: code, noticeCode: noticeCode)
+                if !v.allowed {
+                    return false
+                }
+            } catch {
+                return false
+            }
+        }
+
+        GrantedConsentStore.record(noticeCode: noticeCode, identity: identity)
+        return true
+    }
+
     @MainActor
     public static func show(
         noticeCode: String,
@@ -458,6 +531,21 @@ public final class SammatiNotice {
     ) async throws -> ConsentResult {
         let options = ConsentOptions(
             noticeCode: noticeCode,
+            subjectRef: subjectRef,
+            language: language
+        )
+        return try await shared.capture(options: options, presenter: presenter)
+    }
+
+    @MainActor
+    public static func show(
+        consentLink: String,
+        subjectRef: String? = nil,
+        language: String? = nil,
+        presenter: UIViewController
+    ) async throws -> ConsentResult {
+        let options = ConsentOptions(
+            consentLink: consentLink,
             subjectRef: subjectRef,
             language: language
         )
@@ -513,29 +601,6 @@ public final class SammatiNotice {
                 .run(noticeCode: options.noticeCode ?? resolvedToken ?? "", identity: identity, presenter: presenter)
         }
 
-        if !options.forceDisplay && options.skipIfValid {
-            let codes = !options.purposeCodes.isEmpty ? options.purposeCodes :
-                (options.purposeCode.map { [$0] } ?? [])
-            if !codes.isEmpty {
-                var validations: [ConsentValidation] = []
-                for code in codes {
-                    let v = try await validate(identity: identity, purposeCode: code, noticeCode: options.noticeCode)
-                    validations.append(v)
-                    if !v.allowed { break }
-                }
-                if validations.allSatisfy({ $0.allowed }) {
-                    GrantedConsentStore.record(noticeCode: storeKey, identity: identity)
-                    return ConsentResult(
-                        allMandatoryGranted: true,
-                        status: "valid",
-                        showNotice: false,
-                        skipped: true,
-                        message: "Consent has already been provided for all requested purposes."
-                    )
-                }
-            }
-        }
-
         let api = APIClient(configuration: config)
         let notice: Notice
 
@@ -557,11 +622,12 @@ public final class SammatiNotice {
 
         let shouldShowNotice = notice.showNotice ?? true
 
-        SammatiLogger.info("📊 Consent Evaluation: showNotice=\(notice.showNotice ?? true), purposesCount=\(notice.purposes.count), shouldShowNotice=\(shouldShowNotice)")
+        SammatiLogger.info("📊 Consent Evaluation: Dynamic API show_notice=\(shouldShowNotice), purposesCount=\(notice.purposes.count)")
 
+        // Dynamic based on the API response: only skip UI when API dynamically returns show_notice == false
         if !options.forceDisplay && !shouldShowNotice {
             GrantedConsentStore.record(noticeCode: storeKey, identity: identity)
-            SammatiLogger.info("⚡ API returned show_notice=false. Consent already granted. Skipping UI.")
+            SammatiLogger.info("⚡ API dynamically returned show_notice=false. Consent already granted. Skipping UI.")
             return ConsentResult(
                 allMandatoryGranted: true,
                 status: "valid",

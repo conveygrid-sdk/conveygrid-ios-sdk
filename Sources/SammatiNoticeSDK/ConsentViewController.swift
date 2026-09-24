@@ -21,9 +21,7 @@ final class ConsentViewController: UIViewController {
     }
 
     static func present(notice: Notice, theme: NoticeTheme? = nil, presenter: UIViewController) async throws -> Selection {
-        let allMandatoryGranted = !notice.purposes.isEmpty && notice.purposes.filter { $0.mandatory }.allSatisfy { $0.granted }
-        let allPurposesGranted = !notice.purposes.isEmpty && notice.purposes.allSatisfy { $0.granted }
-        if notice.showNotice == false || allMandatoryGranted || allPurposesGranted {
+        if notice.showNotice == false {
             let choices = notice.purposes.map { p in
                 ConsentChoice(purposeId: p.purposeId ?? "", granted: p.granted)
             }
@@ -89,9 +87,7 @@ final class ConsentViewController: UIViewController {
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        let allMandatoryGranted = !notice.purposes.isEmpty && notice.purposes.filter { $0.mandatory }.allSatisfy { $0.granted }
-        let allPurposesGranted = !notice.purposes.isEmpty && notice.purposes.allSatisfy { $0.granted }
-        if notice.showNotice == false || allMandatoryGranted || allPurposesGranted {
+        if notice.showNotice == false {
             if !hasFinished {
                 hasFinished = true
                 let choices = notice.purposes.map { ConsentChoice(purposeId: $0.purposeId ?? "", granted: $0.granted) }
@@ -838,18 +834,23 @@ final class ConsentViewController: UIViewController {
     }
 
     private func mandatorySatisfied() -> Bool {
-        notice.purposes.filter { $0.mandatory && !$0.granted }.allSatisfy {
+        let mandatoryUnresolved = notice.purposes.filter { $0.mandatory && !$0.granted }
+        if mandatoryUnresolved.isEmpty { return true }
+        return mandatoryUnresolved.allSatisfy {
             selections[$0.purposeId ?? ""] == true
         }
     }
 
     private func hasAnySelected() -> Bool {
-        selections.contains { $0.value }
+        notice.purposes.contains { purpose in
+            purpose.granted || (selections[purpose.purposeId ?? ""] == true)
+        }
     }
 
     private func allSelected() -> Bool {
         let available = notice.purposes.filter { !$0.granted }
-        return !available.isEmpty && available.allSatisfy { selections[$0.purposeId ?? ""] == true }
+        if available.isEmpty { return true }
+        return available.allSatisfy { selections[$0.purposeId ?? ""] == true }
     }
 
     private func updateButtons() {
@@ -877,9 +878,10 @@ final class ConsentViewController: UIViewController {
             return
         }
 
-        let choices = notice.purposes.filter { !$0.granted }.compactMap { purpose -> ConsentChoice? in
+        let choices = notice.purposes.compactMap { purpose -> ConsentChoice? in
             guard let id = purpose.purposeId else { return nil }
-            return ConsentChoice(purposeId: id, granted: all ? true : (selections[id] ?? false))
+            let granted = purpose.granted || (all ? true : (selections[id] ?? false))
+            return ConsentChoice(purposeId: id, granted: granted)
         }
 
         guard !hasFinished else { return }

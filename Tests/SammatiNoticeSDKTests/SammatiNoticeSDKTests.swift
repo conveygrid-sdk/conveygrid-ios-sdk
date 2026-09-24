@@ -371,12 +371,12 @@ final class SammatiNoticeSDKTests: XCTestCase {
     }
 
     @MainActor
-    func testConsentViewControllerPresentSkipsWhenAllPurposesAlreadyGranted() async throws {
+    func testConsentViewControllerPresentSkipsWhenNoticeShowNoticeIsFalseAndPurposesGranted() async throws {
         let dummyVC = UIViewController()
         let notice = Notice(
             noticeId: "n_test_2",
             noticeCode: "TEST_2",
-            showNotice: true,
+            showNotice: false,
             purposes: [
                 Purpose(purposeId: "p1", purposeCode: "P1", isMandatory: true, alreadyGranted: true),
                 Purpose(purposeId: "p2", purposeCode: "P2", isMandatory: false, alreadyGranted: true)
@@ -501,6 +501,26 @@ final class SammatiNoticeSDKTests: XCTestCase {
         XCTAssertFalse(completedSelection!.cancelled)
     }
 
+    @MainActor
+    func testConsentViewControllerDirectViewDidLoadBuildsUIWhenShowNoticeIsTrue() {
+        var completedSelection: ConsentViewController.Selection?
+        let notice = Notice(
+            noticeId: "test_n",
+            showNotice: true,
+            purposes: [
+                Purpose(purposeId: "p1", purposeCode: "P1", isMandatory: true, alreadyGranted: true)
+            ]
+        )
+        let vc = ConsentViewController(notice: notice) { sel in
+            completedSelection = sel
+        }
+
+        _ = vc.view // Triggers viewDidLoad()
+
+        XCTAssertNil(completedSelection)
+        XCTAssertFalse(vc.view.subviews.isEmpty)
+    }
+
     func testDebugLoggingToggle() {
         let initial = SammatiLogger.isDebugEnabled
         defer { SammatiLogger.isDebugEnabled = initial }
@@ -607,6 +627,124 @@ final class SammatiNoticeSDKTests: XCTestCase {
         XCTAssertEqual(notice.message, "Consent has already been provided for all requested purposes.")
         XCTAssertEqual(notice.purposes.count, 1)
         XCTAssertEqual(notice.purposes[0].purposeCode, "PROMO")
+    }
+
+    func testIsConsentGivenReturnsTrueWhenRecordedInLocalCache() async throws {
+        SammatiNotice.configure(
+            SammatiConfiguration(
+                clientId: "test_client",
+                origin: "https://example.com"
+            )
+        )
+        let identity = ConsentIdentity(
+            sessionId: SammatiNotice.getSessionId(),
+            email: "cached_user@example.com"
+        )
+        GrantedConsentStore.record(noticeCode: "LOCAL_NOTICE", identity: identity)
+
+        let isGiven = try await SammatiNotice.isConsentGiven(
+            noticeCode: "LOCAL_NOTICE",
+            email: "cached_user@example.com"
+        )
+        XCTAssertTrue(isGiven)
+    }
+
+    func testValidateRequestEncoding() throws {
+        let req = ValidateRequest(
+            purposeCode: "PROMO",
+            noticeCode: "NOTICE_001",
+            referenceId: "ref_123",
+            sessionId: "sess_456",
+            email: "test@example.com",
+            mobile: "9426863400",
+            subjectRef: "sub_789"
+        )
+        let data = try JSONEncoder().encode(req)
+        let json = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+
+        XCTAssertEqual(json?["purpose_code"] as? String, "PROMO")
+        XCTAssertEqual(json?["notice_code"] as? String, "NOTICE_001")
+        XCTAssertEqual(json?["reference_id"] as? String, "ref_123")
+        XCTAssertEqual(json?["session_id"] as? String, "sess_456")
+        XCTAssertEqual(json?["email"] as? String, "test@example.com")
+        XCTAssertEqual(json?["mobile"] as? String, "9426863400")
+        XCTAssertEqual(json?["subject_ref"] as? String, "sub_789")
+    }
+
+    func testConsentOptionsExtractsEmailAndMobileFromWebLinkURL() {
+        let webUrl = "https://conveygridwebappdev.rysun.in/consent/link?token=zF3xziMkTbT6hz0BqLoBJSgq8CXJ5m0WbALMHTtQ9HxAZ02cFio54RwMFnBjTLtc&email=jitendra.prajapati%2B1%40rysun.com&mobile=9426863400"
+        let options = ConsentOptions(consentLink: webUrl)
+        XCTAssertEqual(options.resolvedLinkToken, "zF3xziMkTbT6hz0BqLoBJSgq8CXJ5m0WbALMHTtQ9HxAZ02cFio54RwMFnBjTLtc")
+        XCTAssertEqual(options.email, "jitendra.prajapati+1@rysun.com")
+        XCTAssertEqual(options.mobile, "9426863400")
+    }
+
+    func testParsePublishedNoticeWithAlreadyGrantedPurposeIds() throws {
+        let json = """
+        {
+            "success": true,
+            "message": "Public consent request processed successfully",
+            "data": {
+                "show_notice": false,
+                "message": "Consent has already been provided for all requested purposes.",
+                "already_granted_purpose_ids": [
+                    "683a2b61-1e03-4644-9972-a34ff4f37362",
+                    "b52448e9-00be-49de-a7da-654c0d3e2b23"
+                ],
+                "notice": {
+                    "notice_id": "814027b8-f863-4a09-a5e2-a947c25489aa",
+                    "notice_code": "NOTICE_001",
+                    "show_notice": false,
+                    "purposes": [
+                        {
+                            "purpose_id": "683a2b61-1e03-4644-9972-a34ff4f37362",
+                            "purpose_code": "PROMO",
+                            "is_mandatory": true,
+                            "already_granted": false
+                        },
+                        {
+                            "purpose_id": "b52448e9-00be-49de-a7da-654c0d3e2b23",
+                            "purpose_code": "MKT-EMAIL",
+                            "is_mandatory": false,
+                            "already_granted": false
+                        }
+                    ]
+                }
+            }
+        }
+        """.data(using: .utf8)!
+
+        let client = APIClient(configuration: SammatiConfiguration(clientId: "client", origin: "https://example.com"))
+        let notice = try client.parsePublishedNotice(from: json)
+
+        XCTAssertEqual(notice.showNotice, false)
+        XCTAssertEqual(notice.message, "Consent has already been provided for all requested purposes.")
+        XCTAssertEqual(notice.purposes.count, 2)
+        XCTAssertTrue(notice.purposes[0].granted)
+        XCTAssertTrue(notice.purposes[1].granted)
+    }
+
+    func testParsePublishedNoticeDirectDataWithoutNestedNotice() throws {
+        let json = """
+        {
+            "success": true,
+            "message": "Public consent request processed successfully",
+            "data": {
+                "show_notice": false,
+                "message": "Consent has already been provided for all requested purposes.",
+                "already_granted_purpose_ids": [
+                    "683a2b61-1e03-4644-9972-a34ff4f37362"
+                ],
+                "minor_guardian_established": false
+            }
+        }
+        """.data(using: .utf8)!
+
+        let client = APIClient(configuration: SammatiConfiguration(clientId: "client", origin: "https://example.com"))
+        let notice = try client.parsePublishedNotice(from: json)
+
+        XCTAssertEqual(notice.showNotice, false)
+        XCTAssertEqual(notice.message, "Consent has already been provided for all requested purposes.")
     }
 }
 
